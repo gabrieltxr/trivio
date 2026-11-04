@@ -1,0 +1,70 @@
+# ==============================================================================
+# Trivio — Root Git Ignore
+# ==============================================================================
+
+# 1. Ambientes Virtuais e Dependências Python
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+
+# 2. Bytecode e Caches Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# 3. Bancos de Dados Locais e Arquivos Temporários
+*.db
+*.sqlite
+*.sqlite3
+trivio_dev.db
+*.log
+
+# 4. Variáveis de Ambiente e Credenciais Sensíveis
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.cert
+
+# 5. Frontend Next.js / Node.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.vercel/
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/.pnp
+frontend/.pnp.js
+frontend/.env*.local
+
+# 6. Arquivos de Sistema Operacional e Editores
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 7. Arquivos Temporários de Preview e Scripts Scratch
+scratch_test.py
+frontend_preview.png
+frontend_white_clean_preview_v2.png
