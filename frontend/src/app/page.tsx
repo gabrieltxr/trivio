@@ -1,24 +1,94 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import Image from "next/image";
 import Header from "@/components/Header";
 import SearchBar from "@/components/SearchBar";
 import TrustPillars from "@/components/TrustPillars";
+import QuoteCard from "@/components/QuoteCard";
+import HackerFareCard from "@/components/HackerFareCard";
+import SkeletonCard from "@/components/SkeletonCard";
+import { useSearchWebSocket } from "@/hooks/useSearchWebSocket";
 import { SearchParams } from "@/types";
-import { Sparkles } from "lucide-react";
+import {
+  Sparkles,
+  ArrowUpDown,
+  Filter,
+  CheckCircle2,
+  Layers,
+  Plane,
+  Bus,
+  RefreshCw,
+  X,
+} from "lucide-react";
+
+type SortOption = "TRIVIO_SCORE" | "PRICE_ASC" | "DURATION_ASC";
+type ModalFilter = "ALL" | "AIR" | "ROAD" | "HYBRID";
 
 export default function Home() {
   const [activeParams, setActiveParams] = useState<SearchParams | null>(null);
+  const [sortBy, setSortBy] = useState<SortOption>("TRIVIO_SCORE");
+  const [modalFilter, setModalFilter] = useState<ModalFilter>("ALL");
+
+  const {
+    isSearching,
+    quotes,
+    hackerFares,
+    completedStats,
+    error,
+    activeProviders,
+    startSearch,
+    cancelSearch,
+  } = useSearchWebSocket();
 
   const handleSearch = (params: SearchParams) => {
     setActiveParams(params);
+    startSearch(params);
+
     // Rola suavemente para a área de resultados
     const resultsElem = document.getElementById("results-section");
     if (resultsElem) {
       resultsElem.scrollIntoView({ behavior: "smooth" });
     }
   };
+
+  // Filtra e ordena as cotações reativamente conforme chegam no streaming
+  const filteredAndSortedQuotes = useMemo(() => {
+    let result = [...quotes];
+
+    // 1. Filtro Modal
+    if (modalFilter === "AIR") {
+      result = result.filter((q) => q.modal === "AIR");
+    } else if (modalFilter === "ROAD") {
+      result = result.filter((q) => q.modal === "ROAD");
+    } else if (modalFilter === "HYBRID") {
+      result = result.filter(
+        (q) =>
+          q.modal === "ROAD_AIR" ||
+          q.modal === "HYBRID" ||
+          q.route_metadata?.is_virtual_interline
+      );
+    }
+
+    // 2. Ordenação
+    result.sort((a, b) => {
+      if (sortBy === "TRIVIO_SCORE") {
+        const scoreA = a.trivio_score ?? Number.MAX_VALUE;
+        const scoreB = b.trivio_score ?? Number.MAX_VALUE;
+        if (scoreA !== scoreB) return scoreA - scoreB;
+        return a.total_effective_price - b.total_effective_price;
+      }
+      if (sortBy === "PRICE_ASC") {
+        return a.total_effective_price - b.total_effective_price;
+      }
+      if (sortBy === "DURATION_ASC") {
+        return a.door_to_door_duration_minutes - b.door_to_door_duration_minutes;
+      }
+      return 0;
+    });
+
+    return result;
+  }, [quotes, modalFilter, sortBy]);
 
   return (
     <div className="flex flex-col min-h-screen bg-white text-slate-900">
@@ -48,38 +118,191 @@ export default function Home() {
             </h1>
 
             <p className="text-slate-600 text-base sm:text-lg mt-5 max-w-2xl mx-auto leading-relaxed">
-              O primeiro comparador que coloca <strong className="text-slate-900 font-bold">Avião</strong> e <strong className="text-slate-900 font-bold">Ônibus</strong> na mesma régua: cálculo de custo real, bônus de sono produtivo no leito noturno e combinações Hacker Fares de até 60% de economia.
+              O primeiro comparador que coloca <strong className="text-slate-900 font-bold">Avião</strong> e{" "}
+              <strong className="text-slate-900 font-bold">Ônibus</strong> na mesma régua: cálculo de custo real,
+              bônus de sono produtivo no leito noturno e combinações Hacker Fares de até 60% de economia.
             </p>
           </div>
 
           {/* 3. Floating Interactive Search Widget White Clean */}
-          <SearchBar onSearch={handleSearch} />
+          <SearchBar onSearch={handleSearch} isLoading={isSearching} />
         </div>
       </section>
 
       {/* 4. Pilares de Confiança e Metodologia (Design Clean) */}
       <TrustPillars />
 
-      {/* 5. Placeholder para os Resultados da Busca (Passo 6.3 e 6.4) */}
-      <section id="results-section" className="w-full max-w-7xl mx-auto px-4 sm:px-8 py-12">
-        {activeParams ? (
-          <div className="bg-cyan-50/40 border border-cyan-200 rounded-3xl p-8 text-center animate-fadeIn shadow-sm">
-            <h3 className="text-xl font-bold text-slate-900 mb-2">
-              Busca iniciada para {activeParams.origin} ➔ {activeParams.destination}
-            </h3>
-            <p className="text-slate-600 text-sm max-w-md mx-auto mb-6">
-              O canal de streaming em tempo real com WebSockets (Passo 6.3) e os cards visuais de cotação com Trivio Score (Passo 6.4) serão conectados a este contêiner.
-            </p>
-            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-100 text-cyan-800 border border-cyan-300 text-xs font-semibold">
-              <span className="w-2 h-2 rounded-full bg-cyan-600 animate-ping" />
-              Pronto para conexão com o endpoint /ws/search do FastAPI
+      {/* 5. Área de Resultados da Busca Intermodal (Streaming Reativo WebSockets) */}
+      <section id="results-section" className="w-full max-w-7xl mx-auto px-4 sm:px-8 py-12 scroll-mt-20">
+        
+        {/* Barra de Status e Progresso de Streaming */}
+        {activeParams && (
+          <div className="mb-8 p-5 rounded-2xl bg-slate-50 border border-slate-200/90 shadow-sm">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              
+              <div className="flex items-center gap-3">
+                {isSearching ? (
+                  <div className="w-9 h-9 rounded-xl bg-cyan-100 flex items-center justify-center text-cyan-700 animate-spin">
+                    <RefreshCw className="w-4 h-4" />
+                  </div>
+                ) : (
+                  <div className="w-9 h-9 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700">
+                    <CheckCircle2 className="w-5 h-5" />
+                  </div>
+                )}
+
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-lg font-black text-slate-950">
+                      {activeParams.origin} ➔ {activeParams.destination}
+                    </h2>
+                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-200/80 font-bold text-slate-700">
+                      {quotes.length} {quotes.length === 1 ? "opção" : "opções"}
+                    </span>
+                  </div>
+                  
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {isSearching ? (
+                      <span className="flex items-center gap-1.5 text-cyan-800 font-semibold">
+                        <span className="w-2 h-2 rounded-full bg-cyan-600 animate-ping" />
+                        Buscando em tempo real nos coletores... (
+                        {activeProviders.join(" • ") || "ClickBus, Amadeus"})
+                      </span>
+                    ) : completedStats ? (
+                      <span>
+                        Busca concluída em {(completedStats.totalElapsedMs / 1000).toFixed(1)}s • Menor tarifa:{" "}
+                        <strong className="text-slate-900">
+                          R$ {completedStats.cheapestPrice.toFixed(2).replace(".", ",")}
+                        </strong>
+                      </span>
+                    ) : (
+                      <span>Data: {activeParams.date}</span>
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              {/* Botão de Cancelamento se Busca estiver em andamento */}
+              {isSearching && (
+                <button
+                  type="button"
+                  onClick={cancelSearch}
+                  className="px-3.5 py-1.5 rounded-xl border border-slate-300 hover:bg-slate-200 text-xs font-semibold text-slate-700 transition-colors flex items-center gap-1.5 self-start md:self-auto"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>Cancelar</span>
+                </button>
+              )}
             </div>
+
+            {/* Barra de Filtros e Ordenação */}
+            {quotes.length > 0 && (
+              <div className="mt-5 pt-4 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-4 text-xs font-semibold">
+                
+                {/* Filtro por Modal */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-500 flex items-center gap-1 mr-1">
+                    <Filter className="w-3.5 h-3.5" />
+                    Filtrar:
+                  </span>
+                  
+                  {[
+                    { id: "ALL", label: "Todos", icon: null },
+                    { id: "AIR", label: "Aéreo", icon: Plane },
+                    { id: "ROAD", label: "Ônibus", icon: Bus },
+                    { id: "HYBRID", label: "Conexões Híbridas", icon: Layers },
+                  ].map((f) => {
+                    const Icon = f.icon;
+                    return (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => setModalFilter(f.id as ModalFilter)}
+                        className={`px-3 py-1.5 rounded-xl transition-all flex items-center gap-1.5 ${
+                          modalFilter === f.id
+                            ? "bg-slate-900 text-white shadow-sm"
+                            : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
+                        }`}
+                      >
+                        {Icon && <Icon className="w-3 h-3" />}
+                        <span>{f.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Ordenação */}
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-500 flex items-center gap-1">
+                    <ArrowUpDown className="w-3.5 h-3.5" />
+                    Ordenar por:
+                  </span>
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as SortOption)}
+                    className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-slate-900 font-bold focus:outline-none focus:border-cyan-500 cursor-pointer"
+                  >
+                    <option value="TRIVIO_SCORE">Trivio Score (Menor Atrito - Recomendado)</option>
+                    <option value="PRICE_ASC">Menor Custo Efetivo Real</option>
+                    <option value="DURATION_ASC">Mais Rápido (Porta a Porta)</option>
+                  </select>
+                </div>
+
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Mensagem de Erro se houver */}
+        {error && (
+          <div className="mb-6 p-4 rounded-2xl bg-red-50 border border-red-200 text-red-800 text-xs font-semibold">
+            {error}
+          </div>
+        )}
+
+        {/* 1. Destaque de Hacker Fares (Combinações Inteligentes) */}
+        {hackerFares.length > 0 && (
+          <div className="mb-8">
+            <h3 className="text-sm font-extrabold uppercase tracking-wider text-amber-700 mb-3 flex items-center gap-1.5">
+              <Sparkles className="w-4 h-4 text-amber-500" />
+              Oportunidades Hacker Fares Identificadas
+            </h3>
+            {hackerFares.map((combo, idx) => (
+              <HackerFareCard key={idx} combination={combo} />
+            ))}
+          </div>
+        )}
+
+        {/* 2. Lista de Cards de Cotação */}
+        {filteredAndSortedQuotes.length > 0 ? (
+          <div className="space-y-4">
+            {filteredAndSortedQuotes.map((quote, idx) => (
+              <QuoteCard
+                key={quote.dedup_signature || idx}
+                quote={quote}
+                isBestScore={idx === 0 && sortBy === "TRIVIO_SCORE"}
+              />
+            ))}
+          </div>
+        ) : isSearching ? (
+          /* Skeletons enquanto os primeiros lotes chegam */
+          <div className="space-y-4">
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+          </div>
+        ) : activeParams ? (
+          /* Nenhuma opção encontrada */
+          <div className="border border-slate-200 bg-slate-50 rounded-3xl p-12 text-center text-slate-600 text-sm">
+            Nenhuma rota disponível encontrada para {activeParams.origin} ➔ {activeParams.destination} na data selecionada.
           </div>
         ) : (
+          /* Estado Inicial */
           <div className="border-2 border-dashed border-slate-200 bg-slate-50/60 rounded-3xl p-12 text-center text-slate-500 text-sm">
             Selecione uma rota acima ou utilize os atalhos rápidos de São Paulo, Rio ou Curitiba para comparar tarifas.
           </div>
         )}
+
       </section>
 
       {/* 6. Footer Corporativo Clean */}

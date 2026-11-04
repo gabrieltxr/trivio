@@ -394,4 +394,4 @@ Siga a ordem exata das fases abaixo durante a implementação assistida no **Ant
 - [x] **Step 6.1:** Inicializar projeto frontend com Next.js 14+ (App Router), TypeScript e Tailwind CSS.
 - [x] **Step 6.2:** Desenvolver a barra de busca intermodal (Origem, Destino, Data de Ida/Volta, Raio Geodésico, Filtro de Bagagem).
 - [x] **Step 6.3:** Implementar o hook `useSearchWebSocket` que conecta ao endpoint `/ws/search` do FastAPI, exibindo skeleton loaders e renderizando os cards de passagens progressivamente ("pipocando" na tela).
-- [ ] **Step 6.4:** Desenvolver os cards de cotação com o comparativo de **Custo Efetivo Real vs. Tarifa Base**, badges de **Prós & Contras**, **Termômetro de Preço** e alertas visuais de **Contratempos de Rota** e **Conexões Híbridas (Virtual Interlining)**.
+- [x] **Step 6.4:** Desenvolver os cards de cotação com o comparativo de **Custo Efetivo Real vs. Tarifa Base**, badges de **Prós & Contras**, **Termômetro de Preço** e alertas visuais de **Contratempos de Rota** e **Conexões Híbridas (Virtual Interlining)**.
