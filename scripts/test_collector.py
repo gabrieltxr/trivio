@@ -39,7 +39,7 @@ from app.analyzers.price_thermometer import enrich_quotes_batch_with_thermometer
 from app.analyzers.route_evaluator import enrich_quote_with_evaluation
 from app.analyzers.trivio_scorer import generate_hacker_fares, score_and_rank_quotes
 from app.cache.deduplicator import QuoteDeduplicator as Deduplicator
-from app.collectors.air.amadeus import AmadeusCollector
+from app.services.air_quotes import get_air_quote_service
 from app.collectors.base import StandardizedQuote
 from app.collectors.road.clickbus import ClickBusCollector
 from app.config import settings
@@ -80,7 +80,7 @@ def get_sample_quotes(origin: str, dest: str, travel_date: datetime) -> List[Sta
             origin_external_id="CGH",
             destination_external_id="SDU",
             modal="AIR",
-            provider_source="amadeus",
+            provider_source="trivio_simulation",
             carrier_name="LATAM Airlines",
             service_class="ECONOMY",
             departure_time=dep_base.replace(hour=14, minute=0),
@@ -103,7 +103,7 @@ def get_sample_quotes(origin: str, dest: str, travel_date: datetime) -> List[Sta
             origin_external_id="CGH",
             destination_external_id="SDU",
             modal="AIR",
-            provider_source="amadeus",
+            provider_source="trivio_simulation",
             carrier_name="GOL Linhas Aéreas",
             service_class="ECONOMY",
             departure_time=dep_base.replace(hour=16, minute=30),
@@ -177,13 +177,14 @@ async def fetch_live_or_sample_quotes(
         console.print(f"  [yellow]⚠ ClickBus indisponível ({e})[/yellow]")
 
     # 2. Coleta Aérea
-    air_collector = AmadeusCollector()
+    # Usa o mesmo serviço da busca: respeita o cache e o orçamento mensal (cada request é paga).
+    air_service = get_air_quote_service()
     try:
-        air_quotes = await air_collector.safe_fetch(origin, dest, travel_date_str)
+        air_quotes = await air_service.get_quotes(origin, dest, travel_date_str)
         quotes.extend(air_quotes)
-        console.print(f"  [green]✓ Amadeus:[/green] {len(air_quotes)} voos coletados")
+        console.print(f"  [green]✓ Ignav:[/green] {len(air_quotes)} voos coletados")
     except Exception as e:
-        console.print(f"  [yellow]⚠ Amadeus indisponível ({e})[/yellow]")
+        console.print(f"  [yellow]⚠ Aéreo ao vivo indisponível ({e})[/yellow]")
 
     # Fallback se ambos retornarem vazio
     if not quotes:

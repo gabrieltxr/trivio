@@ -166,7 +166,7 @@ export default function Home() {
                       <span className="flex items-center gap-1.5 text-cyan-800 font-semibold">
                         <span className="w-2 h-2 rounded-full bg-cyan-600 animate-ping" />
                         Buscando em tempo real nos coletores... (
-                        {activeProviders.join(" • ") || "ClickBus, Amadeus"})
+                        {activeProviders.join(" • ") || "ClickBus, Ignav"})
                       </span>
                     ) : completedStats ? (
                       <span>

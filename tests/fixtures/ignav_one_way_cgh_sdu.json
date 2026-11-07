@@ -1,0 +1,163 @@
+{
+ "origin": "CGH",
+ "destination": "SDU",
+ "departure_date": "2026-12-01",
+ "itineraries": [
+  {
+   "price": {
+    "amount": 610.0,
+    "currency": "BRL",
+    "status": "verified"
+   },
+   "outbound": {
+    "carrier": "Azul",
+    "duration_minutes": 60,
+    "segments": [
+     {
+      "marketing_carrier_code": "AD",
+      "flight_number": "6050",
+      "operating_carrier_name": "Azul",
+      "departure_airport": "CGH",
+      "departure_time_local": "2026-12-01T07:20:00",
+      "departure_timezone": "America/Sao_Paulo",
+      "departure_time_utc": "2026-12-01T10:20:00Z",
+      "arrival_airport": "SDU",
+      "arrival_time_local": "2026-12-01T08:20:00",
+      "arrival_timezone": "America/Sao_Paulo",
+      "arrival_time_utc": "2026-12-01T11:20:00Z",
+      "duration_minutes": 60,
+      "aircraft": "Embraer 195"
+     }
+    ]
+   },
+   "cabin_class": "economy",
+   "has_mixed_carriers": false,
+   "ignav_id": "fixture000000000000000000000000"
+  },
+  {
+   "price": {
+    "amount": 688.0,
+    "currency": "BRL",
+    "status": "verified"
+   },
+   "outbound": {
+    "carrier": "LATAM",
+    "duration_minutes": 60,
+    "segments": [
+     {
+      "marketing_carrier_code": "LA",
+      "flight_number": "3908",
+      "operating_carrier_name": "LATAM",
+      "departure_airport": "CGH",
+      "departure_time_local": "2026-12-01T09:05:00",
+      "departure_timezone": "America/Sao_Paulo",
+      "departure_time_utc": "2026-12-01T12:05:00Z",
+      "arrival_airport": "SDU",
+      "arrival_time_local": "2026-12-01T10:05:00",
+      "arrival_timezone": "America/Sao_Paulo",
+      "arrival_time_utc": "2026-12-01T13:05:00Z",
+      "duration_minutes": 60,
+      "aircraft": "Airbus A319"
+     }
+    ]
+   },
+   "cabin_class": "economy",
+   "has_mixed_carriers": false,
+   "ignav_id": "fixture000000000000000000000001"
+  },
+  {
+   "price": {
+    "amount": 688.0,
+    "currency": "BRL",
+    "status": "verified"
+   },
+   "outbound": {
+    "carrier": "Gol",
+    "duration_minutes": 60,
+    "segments": [
+     {
+      "marketing_carrier_code": "G3",
+      "flight_number": "1014",
+      "operating_carrier_name": "Gol",
+      "departure_airport": "CGH",
+      "departure_time_local": "2026-12-01T10:50:00",
+      "departure_timezone": "America/Sao_Paulo",
+      "departure_time_utc": "2026-12-01T13:50:00Z",
+      "arrival_airport": "SDU",
+      "arrival_time_local": "2026-12-01T11:50:00",
+      "arrival_timezone": "America/Sao_Paulo",
+      "arrival_time_utc": "2026-12-01T14:50:00Z",
+      "duration_minutes": 60,
+      "aircraft": "Boeing 737"
+     }
+    ]
+   },
+   "cabin_class": "economy",
+   "has_mixed_carriers": false,
+   "ignav_id": "fixture000000000000000000000002"
+  },
+  {
+   "price": {
+    "amount": 922.0,
+    "currency": "BRL",
+    "status": "verified"
+   },
+   "outbound": {
+    "carrier": "Gol",
+    "duration_minutes": 60,
+    "segments": [
+     {
+      "marketing_carrier_code": "G3",
+      "flight_number": "1034",
+      "operating_carrier_name": "Gol",
+      "departure_airport": "CGH",
+      "departure_time_local": "2026-12-01T17:40:00",
+      "departure_timezone": "America/Sao_Paulo",
+      "departure_time_utc": "2026-12-01T20:40:00Z",
+      "arrival_airport": "SDU",
+      "arrival_time_local": "2026-12-01T18:40:00",
+      "arrival_timezone": "America/Sao_Paulo",
+      "arrival_time_utc": "2026-12-01T21:40:00Z",
+      "duration_minutes": 60,
+      "aircraft": "Boeing 737"
+     }
+    ]
+   },
+   "cabin_class": "economy",
+   "has_mixed_carriers": false,
+   "ignav_id": "fixture000000000000000000000003"
+  },
+  {
+   "price": {
+    "amount": 1878.0,
+    "currency": "BRL",
+    "status": "verified"
+   },
+   "outbound": {
+    "carrier": "LATAM",
+    "duration_minutes": 65,
+    "segments": [
+     {
+      "marketing_carrier_code": "LA",
+      "flight_number": "3904",
+      "operating_carrier_name": "LATAM",
+      "departure_airport": "CGH",
+      "departure_time_local": "2026-12-01T07:55:00",
+      "departure_timezone": "America/Sao_Paulo",
+      "departure_time_utc": "2026-12-01T10:55:00Z",
+      "arrival_airport": "SDU",
+      "arrival_time_local": "2026-12-01T09:00:00",
+      "arrival_timezone": "America/Sao_Paulo",
+      "arrival_time_utc": "2026-12-01T12:00:00Z",
+      "duration_minutes": 65,
+      "aircraft": "Airbus A319"
+     }
+    ]
+   },
+   "cabin_class": "economy",
+   "has_mixed_carriers": false,
+   "ignav_id": "fixture000000000000000000000004"
+  }
+ ],
+ "observed_at": "2026-11-07T18:12:36.825825Z"
+}

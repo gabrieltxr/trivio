@@ -12,6 +12,7 @@ import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -25,10 +26,12 @@ from app.api.schemas import (
     LocationSuggestion,
     TerminalBase,
 )
+from app.collectors.base import CollectorError
 from app.database import get_db
 from app.geo.catchment import CatchmentFinder
 from app.geo.entity_resolver import normalize_text
 from app.models import FareQuote, Hub, ModalType, Terminal
+from app.services.air_quotes import AirProviderUnavailableError, get_air_quote_service
 
 logger = logging.getLogger("trivio.api.routes")
 
@@ -436,3 +439,45 @@ def get_cached_quotes(
         total_quotes=len(quote_responses),
         quotes=quote_responses,
     )
+
+
+# ==============================================================================
+# Aéreo ao vivo: link de compra sob demanda e consumo do orçamento
+# ==============================================================================
+
+@router.get(
+    "/air/booking-link",
+    summary="Redireciona para a página de compra do voo (resolve o link sob demanda)",
+    response_class=RedirectResponse,
+)
+async def air_booking_link(
+    ignav_id: str = Query(..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
+    origin: str = Query(..., min_length=3, max_length=3),
+    destination: str = Query(..., min_length=3, max_length=3),
+    departure_date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    carrier_code: Optional[str] = Query(None, max_length=3),
+    flight_number: Optional[str] = Query(None, max_length=8),
+):
+    """O link de compra custa uma request ao provedor; por isso só é buscado no clique.
+
+    Fica em cache por 30 minutos e respeita o mesmo orçamento mensal das buscas.
+    """
+    service = get_air_quote_service()
+    try:
+        url = await service.get_booking_url(
+            ignav_id, origin, destination, departure_date, carrier_code or None, flight_number or None,
+        )
+    except AirProviderUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    except CollectorError as exc:
+        logger.warning(f"Falha ao obter link de compra ({type(exc).__name__}: {exc})")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Não foi possível obter o link de compra agora. Tente pesquisar o voo de novo.",
+        )
+    return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/air/usage", summary="Consumo do orçamento mensal do aéreo ao vivo")
+def air_usage():
+    return get_air_quote_service().usage()

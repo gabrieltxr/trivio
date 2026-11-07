@@ -192,3 +192,41 @@ class RouteMonthlyFare(Base):
             f"<RouteMonthlyFare(route='{self.route_key}', class='{self.service_class}', "
             f"viagem={self.trip_month}, emissao={self.emission_period}, n={self.sample_size})>"
         )
+
+
+class ProviderQuery(Base):
+    """Uma consulta feita (ou evitada) a um provedor pago de preços ao vivo.
+
+    Faz três papéis:
+      - cache: uma consulta 'ok' ou 'empty' ainda válida é respondida daqui, sem
+        nova request. Guardar a consulta vazia evita pagar de novo por uma rota
+        sem voos;
+      - orçamento: as linhas 'ok'/'empty' do mês são as requests cobradas;
+      - auditoria: erros ficam registrados (não contam no orçamento nem viram cache).
+
+    As cotações guardadas aqui expiram junto com a consulta; o histórico
+    permanente (FareQuote) é controlado por AIR_PERSIST_LIVE_QUOTES.
+    """
+    __tablename__ = "provider_queries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(50), nullable=False, index=True)
+    kind = Column(String(30), nullable=False, default="search")  # 'search' ou 'booking_link'
+    query_key = Column(String(64), nullable=False, index=True)    # SHA-256 dos parâmetros normalizados
+    origin = Column(String(10))
+    destination = Column(String(10))
+    travel_date = Column(String(10))                             # 'AAAA-MM-DD'
+    requested_at = Column(DateTime, nullable=False, index=True, default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime, nullable=True, index=True)
+    status = Column(String(20), nullable=False)                  # 'ok', 'empty', 'error'
+    billed = Column(Integer, nullable=False, default=0)          # 1 quando a request conta como cobrada
+    quotes_count = Column(Integer, nullable=False, default=0)
+    elapsed_ms = Column(Float)
+    error = Column(String(500))
+    payload = Column(JSON)                                       # cotações serializadas (cache) ou link
+
+    def __repr__(self) -> str:
+        return (
+            f"<ProviderQuery({self.provider} {self.kind} {self.origin}->{self.destination} "
+            f"{self.travel_date} status={self.status} n={self.quotes_count})>"
+        )

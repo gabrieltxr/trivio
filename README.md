@@ -45,7 +45,7 @@ flowchart TD
     subgraph Collectors["Smart Collectors & Cache"]
         Compliance["Compliance Layer\n(robots.txt + User-Agent identificado)"]
         ClickBus["ClickBus Collector\n(requer autorização do provedor)"]
-        Amadeus["Amadeus Collector\n(Aéreo GDS v2)"]
+        Ignav["AirQuoteService + Ignav\n(Aéreo ao vivo, cache e orçamento)"]
         Deduplicator["Broker Deduplicator\n(SHA-256 Canonical Signatures)"]
         TTLPolicy["Smart TTL Policy\n(D-1 a D-30+ Caching)"]
     end
@@ -58,11 +58,10 @@ flowchart TD
     WSClient <-->|Streaming em Tempo Real| WS
     WS --> Compliance
     Compliance --> ClickBus
-    Compliance --> Amadeus
-    ClickBus & Amadeus --> Deduplicator
+    ClickBus & Ignav --> Deduplicator
     Deduplicator --> TTLPolicy
     TTLPolicy --> DB
-    ClickBus & Amadeus --> Evaluator
+    ClickBus & Ignav --> Evaluator
     Evaluator --> Scorer
     Scorer --> Thermometer
     Thermometer --> Interliner
@@ -115,7 +114,8 @@ de parceiros), nunca técnico.
 
 | Provedor | Modal | Situação |
 |---|---|---|
-| **Amadeus** | Aéreo | ✅ Autorizado. Basta configurar as credenciais no `.env`. |
+| **Ignav** | Aéreo (preço ao vivo) | ✅ API contratada, cobrada por request. Configure `IGNAV_API_KEY` no `.env`. |
+| **ANAC** (microdados de tarifas) | Aéreo (régua do Termômetro) | ✅ Dados abertos oficiais. Importe com `scripts/import_anac_fares.py`. |
 | **ANTT (dados abertos)** | Rodoviário | ✅ Público e sem chave. Tarifas **históricas reais** sob CC-BY (a API CKAN é proibida pelo `robots.txt`; usamos os caminhos permitidos). |
 | **ClickBus** | Rodoviário | ⛔ Sem autorização. O `robots.txt` proíbe as páginas de resultado (`Disallow: /*?departureDate=`) e o WAF responde 403 ao endpoint interno. Depende da API B2B de parceiros. |
 
@@ -187,7 +187,8 @@ trivio/
 │   ├── collectors/             # Coletores de Provedores Modais
 │   │   ├── base.py             # Classe abstrata, retries e modelo StandardizedQuote
 │   │   ├── compliance.py       # robots.txt, User-Agent identificado, ritmo e recusas
-│   │   ├── air/amadeus.py      # Coletor Amadeus v2 (Aéreo)
+│   │   ├── air/ignav.py        # Coletor aéreo ao vivo (Ignav)
+│   │   ├── anac/               # Microdados de tarifas aéreas da ANAC (régua)
 │   │   ├── antt/               # Dados abertos da ANTT (Monitriip)
 │   │   │   ├── portal.py       # Descoberta e download pelos caminhos permitidos
 │   │   │   └── monitriip.py    # Detecção de esquema e agregação de tarifas
@@ -260,8 +261,14 @@ trivio/
    cp .env.example .env
    ```
    No `.env`, vale preencher:
-   - `AMADEUS_CLIENT_ID` / `AMADEUS_CLIENT_SECRET` — credenciais gratuitas do
-     [Amadeus Self-Service](https://developers.amadeus.com). **Sem elas o lado aéreo não busca nada.**
+   - `IGNAV_API_KEY` — chave da [Ignav Flight Prices API](https://ignav.com). **Sem ela o aéreo ao vivo
+     fica desligado** e o frontend recebe `PROVIDER_ERROR` com `reason: "not_configured"`.
+     Cada busca nova custa uma request (1.000 grátis uma única vez; depois US$ 2 a cada 1.000).
+     `AIR_MONTHLY_REQUEST_BUDGET` (padrão 800) limita o gasto do mês; buscas repetidas saem do cache
+     (`provider_queries`) sem custo. Consumo do mês: `GET /api/v1/air/usage`.
+   - `AIR_PERSIST_LIVE_QUOTES` — desligado por padrão: as cotações ao vivo não entram no histórico
+     permanente até você confirmar que os termos do provedor permitem.
+   - Régua do aéreo: `python scripts/import_anac_fares.py --months 12` (tarifas reais vendidas, ANAC).
    - `BOT_INFO_URL` / `BOT_CONTACT_EMAIL` — identificam o robô do Trivio no `User-Agent`
      e dão aos sites um canal de contato. Veja *Política de Coleta de Dados* acima.
    - `DATABASE_URL` — troque para PostgreSQL em produção.

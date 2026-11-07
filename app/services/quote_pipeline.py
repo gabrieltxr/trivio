@@ -22,6 +22,7 @@ from app.analyzers.route_evaluator import enrich_quote_with_evaluation
 from app.cache.deduplicator import deduplicate_quotes
 from app.cache.ttl_policy import calculate_expiration_datetime
 from app.collectors.base import StandardizedQuote
+from app.config import settings
 from app.models import FareQuote, ModalType, ProviderMapping, Terminal
 
 logger = logging.getLogger("trivio.services.quote_pipeline")
@@ -62,9 +63,16 @@ def find_terminal_by_external_id(
 NON_PERSISTABLE_PROVIDERS = {"trivio_simulation", "trivio_interliner"}
 
 
+# Provedores de preço ao vivo cujos termos ainda não confirmamos para guardar histórico.
+# O cache de consultas (provider_queries) continua funcionando; só o FareQuote fica de fora.
+LIVE_AIR_PROVIDERS = {"ignav"}
+
+
 def is_persistable_quote(quote: StandardizedQuote) -> bool:
     """Indica se a cotação representa um preço real de mercado que pode ir para o banco."""
     if quote.provider_source in NON_PERSISTABLE_PROVIDERS:
+        return False
+    if quote.provider_source in LIVE_AIR_PROVIDERS and not settings.AIR_PERSIST_LIVE_QUOTES:
         return False
     meta = quote.route_metadata or {}
     return not (meta.get("is_simulated") or meta.get("is_virtual_interline"))

@@ -45,7 +45,7 @@ SEED_HUBS = [
                 "estimated_transfer_cost_brl": 38.0,
                 "estimated_transfer_minutes": 25,
                 "mappings": [
-                    {"provider_name": "amadeus", "external_id": "CGH"},
+                    {"provider_name": "ignav", "external_id": "CGH"},
                     {"provider_name": "kiwi", "external_id": "CGH"},
                 ],
             },
@@ -59,7 +59,7 @@ SEED_HUBS = [
                 "estimated_transfer_cost_brl": 75.0,
                 "estimated_transfer_minutes": 50,
                 "mappings": [
-                    {"provider_name": "amadeus", "external_id": "GRU"},
+                    {"provider_name": "ignav", "external_id": "GRU"},
                     {"provider_name": "kiwi", "external_id": "GRU"},
                 ],
             },
@@ -111,7 +111,7 @@ SEED_HUBS = [
                 "estimated_transfer_cost_brl": 45.0,
                 "estimated_transfer_minutes": 25,
                 "mappings": [
-                    {"provider_name": "amadeus", "external_id": "VCP"},
+                    {"provider_name": "ignav", "external_id": "VCP"},
                     {"provider_name": "kiwi", "external_id": "VCP"},
                 ],
             },
@@ -148,7 +148,7 @@ SEED_HUBS = [
                 "estimated_transfer_cost_brl": 18.0,
                 "estimated_transfer_minutes": 10,
                 "mappings": [
-                    {"provider_name": "amadeus", "external_id": "SDU"},
+                    {"provider_name": "ignav", "external_id": "SDU"},
                     {"provider_name": "kiwi", "external_id": "SDU"},
                 ],
             },
@@ -162,7 +162,7 @@ SEED_HUBS = [
                 "estimated_transfer_cost_brl": 65.0,
                 "estimated_transfer_minutes": 35,
                 "mappings": [
-                    {"provider_name": "amadeus", "external_id": "GIG"},
+                    {"provider_name": "ignav", "external_id": "GIG"},
                     {"provider_name": "kiwi", "external_id": "GIG"},
                 ],
             },
@@ -200,7 +200,7 @@ SEED_HUBS = [
                 "estimated_transfer_cost_brl": 50.0,
                 "estimated_transfer_minutes": 35,
                 "mappings": [
-                    {"provider_name": "amadeus", "external_id": "CWB"},
+                    {"provider_name": "ignav", "external_id": "CWB"},
                     {"provider_name": "kiwi", "external_id": "CWB"},
                 ],
             },
@@ -238,7 +238,7 @@ SEED_HUBS = [
                 "estimated_transfer_cost_brl": 30.0,
                 "estimated_transfer_minutes": 20,
                 "mappings": [
-                    {"provider_name": "amadeus", "external_id": "POA"},
+                    {"provider_name": "ignav", "external_id": "POA"},
                     {"provider_name": "kiwi", "external_id": "POA"},
                 ],
             },
@@ -275,7 +275,7 @@ SEED_HUBS = [
                 "estimated_transfer_cost_brl": 25.0,
                 "estimated_transfer_minutes": 15,
                 "mappings": [
-                    {"provider_name": "amadeus", "external_id": "PET"},
+                    {"provider_name": "ignav", "external_id": "PET"},
                     {"provider_name": "kiwi", "external_id": "PET"},
                 ],
             },
@@ -312,7 +312,7 @@ SEED_HUBS = [
                 "estimated_transfer_cost_brl": 30.0,
                 "estimated_transfer_minutes": 20,
                 "mappings": [
-                    {"provider_name": "amadeus", "external_id": "RIG"},
+                    {"provider_name": "ignav", "external_id": "RIG"},
                     {"provider_name": "kiwi", "external_id": "RIG"},
                 ],
             },

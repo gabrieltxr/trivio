@@ -149,7 +149,7 @@ def get_default_async_client(
     """Cliente HTTPX assíncrono identificado, para APIs oficiais e autenticadas.
 
     Não verifica robots.txt. Use-o apenas para APIs contratadas/credenciadas
-    (ex: Amadeus). Para raspagem de sites públicos use
+    (ex: Ignav). Para raspagem de sites públicos use
     `app.collectors.compliance.CompliantHTTPClient`, que valida o robots.txt,
     respeita o Crawl-delay e trata 401/403 como negativa definitiva.
     """
