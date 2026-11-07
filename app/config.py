@@ -6,7 +6,7 @@ defaults for local development and production.
 
 from functools import lru_cache
 from typing import List, Optional
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,10 +49,38 @@ class Settings(BaseSettings):
     BUS_TERMINAL_CHECKIN_BUFFER_MINUTES: int = 20  # Antecedência rodoviária
     DEFAULT_FLIGHT_BAGGAGE_FEE_ESTIMATE_BRL: float = 110.0  # Estimativa bagagem 23kg
 
-    # Provider API Credentials (Optional / Phase 3)
-    AMADEUS_CLIENT_ID: Optional[str] = None
-    AMADEUS_CLIENT_SECRET: Optional[str] = None
-    AMADEUS_ENV: str = "test"
+    # Endereço público da API, usado para montar links que o navegador abre
+    # (ex: o link de compra do aéreo, resolvido sob demanda).
+    PUBLIC_API_BASE_URL: str = "http://localhost:8000"
+
+    # Preços aéreos ao vivo (Ignav Flight Prices API)
+    IGNAV_API_KEY: Optional[str] = None
+    IGNAV_BASE_URL: str = "https://ignav.com"
+    IGNAV_MARKET: str = "BR"                  # Mercado brasileiro: preços em BRL
+    IGNAV_TIMEOUT_SECONDS: float = 30.0
+
+    # Teto de requests pagas ao provedor aéreo por mês (busca + link de compra).
+    # Ao atingir, o aéreo para de consultar e o frontend é avisado. 0 desliga o aéreo ao vivo.
+    AIR_MONTHLY_REQUEST_BUDGET: int = 800
+    # Teto de validade do cache de consultas aéreas, acima das faixas por data de viagem.
+    AIR_LIVE_CACHE_MAX_SECONDS: int = 7200
+    # Grava as cotações ao vivo no histórico permanente (FareQuote). Desligado até
+    # confirmar que os termos de uso do provedor permitem guardar preços.
+    AIR_PERSIST_LIVE_QUOTES: bool = False
+
+    # Taxa de embarque doméstica estimada, para separar tarifa e taxa no preço total
+    # do provedor (a régua da ANAC usa a tarifa sem taxa). Os valores de 2026 ficam
+    # entre R$ 33 e R$ 55 conforme o aeroporto; por aeroporto em app/collectors/air/boarding_fees.py.
+    DEFAULT_DOMESTIC_BOARDING_FEE_BRL: float = 40.0
+
+    @field_validator("IGNAV_API_KEY", mode="before")
+    @classmethod
+    def _strip_secret(cls, value):
+        """Remove espaços e quebras de linha (ex: .env salvo com CRLF); vazio vira None."""
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return cleaned or None
 
 
 @lru_cache()

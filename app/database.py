@@ -5,7 +5,7 @@ PostgreSQL in production with connection pooling and foreign key enforcement.
 """
 
 from typing import Generator
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
 from app.config import settings
 
@@ -61,3 +61,36 @@ def check_db_connection() -> bool:
         return True
     except Exception:
         return False
+
+
+# Colunas acrescentadas depois da criação inicial das tabelas. O projeto não usa
+# Alembic; create_all() não altera tabelas existentes, então as acrescentamos aqui.
+_ADDED_COLUMNS = {
+    "route_monthly_fares": {
+        "p10_brl": "FLOAT",
+        "p25_brl": "FLOAT",
+        "p50_brl": "FLOAT",
+        "p75_brl": "FLOAT",
+        "p90_brl": "FLOAT",
+    },
+}
+
+
+def ensure_schema(bind=None) -> None:
+    """Cria as tabelas que faltam e acrescenta colunas novas às existentes.
+
+    Idempotente: pode rodar a cada inicialização. Só acrescenta colunas anuláveis.
+    """
+    import app.models  # noqa: F401  (registra os modelos no metadata)
+
+    bind = bind or engine
+    Base.metadata.create_all(bind)
+    inspector = inspect(bind)
+    with bind.begin() as conn:
+        for table, columns in _ADDED_COLUMNS.items():
+            if not inspector.has_table(table):
+                continue
+            existing = {col["name"] for col in inspector.get_columns(table)}
+            for name, sql_type in columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))

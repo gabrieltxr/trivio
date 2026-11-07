@@ -87,7 +87,7 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
           setIsSearching(true);
           setError(null);
           setCompletedStats(null);
-          setActiveProviders(data.providers || ["clickbus", "amadeus"]);
+          setActiveProviders(data.providers || ["clickbus", "ignav"]);
           break;
         }
 
@@ -140,7 +140,7 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
         }
 
         case "PROVIDER_ERROR": {
-          // Erro pontual de um provedor (ex: timeout Amadeus) não derruba a busca
+          // Erro pontual de um provedor (ex: timeout ou orçamento do aéreo esgotado) não derruba a busca
           console.warn(`[Trivio WS] Aviso do provedor ${data.provider}:`, data.error);
           break;
         }

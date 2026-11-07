@@ -31,7 +31,7 @@ from app.analyzers.price_thermometer import enrich_quotes_batch_with_thermometer
 from app.analyzers.route_evaluator import enrich_quote_with_evaluation
 from app.analyzers.trivio_scorer import generate_hacker_fares, score_and_rank_quotes
 from app.cache.deduplicator import deduplicate_quotes
-from app.collectors.air.amadeus import AmadeusCollector
+from app.services.air_quotes import AirProviderUnavailableError, get_air_quote_service
 from app.collectors.base import StandardizedQuote
 from app.collectors.road.clickbus import ClickBusCollector, CLICKBUS_SLUG_MAP
 from app.config import settings
@@ -302,10 +302,15 @@ async def _fetch_provider_batch(
     destination: str,
     travel_date: str,
 ) -> Dict[str, Any]:
-    """Executa a coleta de um único provedor isolando exceções e medindo latência."""
+    """Executa a coleta de um único provedor isolando exceções e medindo latência.
+
+    O aéreo ao vivo (AirQuoteService.get_quotes) propaga as falhas em vez de devolver
+    lista vazia: assim a busca avisa o frontend que o aéreo não foi consultado.
+    """
     start_time = time.perf_counter()
     try:
-        quotes = await collector_instance.safe_fetch(origin, destination, travel_date)
+        fetch = getattr(collector_instance, "get_quotes", None) or collector_instance.safe_fetch
+        quotes = await fetch(origin, destination, travel_date)
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
         return {
             "success": True,
@@ -314,6 +319,19 @@ async def _fetch_provider_batch(
             "quotes": quotes,
             "elapsed_ms": elapsed_ms,
             "error": None,
+            "reason": None,
+        }
+    except AirProviderUnavailableError as exc:
+        elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
+        logger.warning(f"Coletor {collector_name} não consultado ({exc.reason}): {exc}")
+        return {
+            "success": False,
+            "provider": collector_name,
+            "modal": collector_instance.modal,
+            "quotes": [],
+            "elapsed_ms": elapsed_ms,
+            "error": str(exc),
+            "reason": exc.reason,
         }
     except Exception as exc:
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
@@ -325,7 +343,30 @@ async def _fetch_provider_batch(
             "quotes": [],
             "elapsed_ms": elapsed_ms,
             "error": str(exc),
+            "reason": "provider_error",
         }
+
+
+async def _fetch_interline_pair(
+    hub_id: int,
+    road_collector: Any,
+    origin_road: str,
+    hub_road: str,
+    air_collector: Any,
+    hub_air: str,
+    dest_air: str,
+    travel_date: str,
+) -> Dict[str, Any]:
+    """Ônibus origem -> hub e, só se houver ônibus, voo hub -> destino."""
+    leg1 = await _fetch_provider_batch(f"interline_leg1::{hub_id}", road_collector, origin_road, hub_road, travel_date)
+    legs = [leg1]
+    if leg1["success"] and leg1["quotes"]:
+        legs.append(await _fetch_provider_batch(
+            f"interline_leg2::{hub_id}", air_collector, hub_air, dest_air, travel_date
+        ))
+    else:
+        logger.info(f"[interline] Hub {hub_id}: sem ônibus até o hub; voo não consultado (evita request paga).")
+    return {"provider": f"interline_pair::{hub_id}", "legs": legs}
 
 
 def _process_and_score_quotes(
@@ -528,12 +569,12 @@ async def _run_search(
         "destination": destination,
         "travel_date": travel_date,
         "return_date": return_date,
-        "providers": ["clickbus", "amadeus", "virtual_interlining"],
+        "providers": ["clickbus", get_air_quote_service().provider_name, "virtual_interlining"],
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 
     road_collector = ClickBusCollector()
-    air_collector = AmadeusCollector()
+    air_collector = get_air_quote_service()
 
     orig_clickbus = _clickbus_external_id(db, orig_road_term, origin)
     dest_clickbus = _clickbus_external_id(db, dest_road_term, destination)
@@ -555,7 +596,7 @@ async def _run_search(
             _fetch_provider_batch("clickbus", road_collector, orig_clickbus, dest_clickbus, travel_date)
         ),
         asyncio.create_task(
-            _fetch_provider_batch("amadeus", air_collector, orig_air_code, dest_air_code, travel_date)
+            _fetch_provider_batch(air_collector.provider_name, air_collector, orig_air_code, dest_air_code, travel_date)
         ),
     ]
 
@@ -565,17 +606,19 @@ async def _run_search(
             _fetch_provider_batch("clickbus_return", road_collector, dest_clickbus, orig_clickbus, return_date)
         ))
         tasks.append(asyncio.create_task(
-            _fetch_provider_batch("amadeus_return", air_collector, dest_air_code, orig_air_code, return_date)
+            _fetch_provider_batch(f"{air_collector.provider_name}_return", air_collector, dest_air_code, orig_air_code, return_date)
         ))
 
     # Pernas do Virtual Interlining: Ônibus Origem -> Hub e Voo Hub -> Destino
+    # O voo é pago: só é consultado depois que o ônibus até o hub trouxe resultado.
+    # Sem a perna rodoviária a rota híbrida não se forma, e a request seria desperdiçada.
     for hub, hub_road_term, hub_air_term in interline_hubs:
         hub_clickbus = _clickbus_external_id(db, hub_road_term, hub_road_term.official_code or hub.name)
         tasks.append(asyncio.create_task(
-            _fetch_provider_batch(f"interline_leg1::{hub.id}", road_collector, orig_clickbus, hub_clickbus, travel_date)
-        ))
-        tasks.append(asyncio.create_task(
-            _fetch_provider_batch(f"interline_leg2::{hub.id}", air_collector, hub_air_term.official_code, dest_air_code, travel_date)
+            _fetch_interline_pair(
+                hub.id, road_collector, orig_clickbus, hub_clickbus,
+                air_collector, hub_air_term.official_code, dest_air_code, travel_date,
+            )
         ))
 
     try:
@@ -586,8 +629,9 @@ async def _run_search(
 
             # Pernas de interlining não são opções Origem -> Destino: apenas armazena
             if prov.startswith("interline_"):
-                if result["success"]:
-                    leg_results[prov] = result["quotes"]
+                for leg in result.get("legs", [result]):
+                    if leg["success"]:
+                        leg_results[leg["provider"]] = leg["quotes"]
                 continue
 
             if not result["success"]:
@@ -596,6 +640,7 @@ async def _run_search(
                     "session_id": session_id,
                     "provider": prov,
                     "error": result["error"],
+                    "reason": result.get("reason"),
                     "elapsed_ms": result["elapsed_ms"],
                 })
                 continue

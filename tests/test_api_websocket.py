@@ -49,11 +49,11 @@ def test_websocket_ping_pong(client):
 
 
 @patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
-@patch("app.collectors.air.amadeus.AmadeusCollector.safe_fetch")
+@patch("app.services.air_quotes.AirQuoteService.get_quotes")
 def test_websocket_search_orchestration_flow(mock_air, mock_road, client):
     """Valida fluxo completo: SEARCH_STARTED -> QUOTE_BATCH (Road & Air) -> SEARCH_COMPLETED."""
     road_q = _create_dummy_quote("ROAD", "clickbus", "1001", 120.0)
-    air_q = _create_dummy_quote("AIR", "amadeus", "LATAM", 350.0)
+    air_q = _create_dummy_quote("AIR", "ignav", "LATAM", 350.0)
 
     mock_road.return_value = [road_q]
     mock_air.return_value = [air_q]
@@ -84,7 +84,7 @@ def test_websocket_search_orchestration_flow(mock_air, mock_road, client):
 
         providers_received = {batch1["provider"], batch2["provider"]}
         assert "clickbus" in providers_received
-        assert "amadeus" in providers_received
+        assert "ignav" in providers_received
 
         # 3. Evento final SEARCH_COMPLETED
         event_completed = ws.receive_json()
@@ -94,7 +94,7 @@ def test_websocket_search_orchestration_flow(mock_air, mock_road, client):
 
 
 @patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
-@patch("app.collectors.air.amadeus.AmadeusCollector.safe_fetch")
+@patch("app.services.air_quotes.AirQuoteService.get_quotes")
 def test_websocket_search_query_param_autoconnect(mock_air, mock_road, client):
     """Valida que parâmetros passados na URL iniciam a busca automaticamente ao conectar."""
     mock_road.return_value = [_create_dummy_quote("ROAD", "clickbus", "Cometa", 100.0)]
@@ -105,7 +105,7 @@ def test_websocket_search_query_param_autoconnect(mock_air, mock_road, client):
         assert started["event"] == "SEARCH_STARTED"
         assert started["origin"] == "SAO"
 
-        # Recebe batches dos dois provedores (clickbus e amadeus)
+        # Recebe batches dos dois provedores (clickbus e ignav)
         batch1 = ws.receive_json()
         assert batch1["event"] == "QUOTE_BATCH"
 
@@ -118,11 +118,33 @@ def test_websocket_search_query_param_autoconnect(mock_air, mock_road, client):
 
 
 @patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
-@patch("app.collectors.air.amadeus.AmadeusCollector.safe_fetch")
+@patch("app.services.air_quotes.AirQuoteService.get_quotes")
+def test_websocket_reports_air_not_queried_with_reason(mock_air, mock_road, client):
+    """Aéreo sem chave ou sem orçamento não pode parecer 'zero voos': vira PROVIDER_ERROR com motivo."""
+    from app.services.air_quotes import AirProviderUnavailableError
+
+    mock_road.return_value = [_create_dummy_quote("ROAD", "clickbus", "Cometa", 100.0)]
+    mock_air.side_effect = AirProviderUnavailableError("budget_exhausted", "Orçamento do aéreo ao vivo atingido")
+
+    with client.websocket_connect("/ws/search") as ws:
+        ws.send_text(json.dumps({
+            "action": "start_search", "origin": "SAO", "destination": "RIO", "date": "2026-11-20",
+        }))
+        ws.receive_json()  # SEARCH_STARTED
+        events = [ws.receive_json(), ws.receive_json()]
+
+    [air_event] = [e for e in events if e["event"] == "PROVIDER_ERROR"]
+    assert air_event["provider"] == "ignav"
+    assert air_event["reason"] == "budget_exhausted"
+    assert "Orçamento" in air_event["error"]
+
+
+@patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
+@patch("app.services.air_quotes.AirQuoteService.get_quotes")
 def test_websocket_provider_error_isolation(mock_air, mock_road, client):
     """Valida padrão Bulkhead: erro em um coletor gera PROVIDER_ERROR sem derrubar o outro."""
     mock_road.return_value = [_create_dummy_quote("ROAD", "clickbus", "Cometa", 100.0)]
-    mock_air.side_effect = RuntimeError("Amadeus API Timeout Simulada")
+    mock_air.side_effect = RuntimeError("Ignav API Timeout Simulada")
 
     with client.websocket_connect("/ws/search") as ws:
         ws.send_text(json.dumps({
@@ -147,7 +169,7 @@ def test_websocket_provider_error_isolation(mock_air, mock_road, client):
 
 
 @patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
-@patch("app.collectors.air.amadeus.AmadeusCollector.safe_fetch")
+@patch("app.services.air_quotes.AirQuoteService.get_quotes")
 def test_websocket_simulation_mode_is_labeled_and_not_persisted(mock_air, mock_road, client):
     """Sem dados reais: estimativas rotuladas, sem operadoras reais, com transfer e sem persistência.
 
@@ -217,7 +239,7 @@ def test_websocket_simulation_mode_is_labeled_and_not_persisted(mock_air, mock_r
     ],
 )
 @patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
-@patch("app.collectors.air.amadeus.AmadeusCollector.safe_fetch")
+@patch("app.services.air_quotes.AirQuoteService.get_quotes")
 def test_websocket_rejects_invalid_search_params(mock_air, mock_road, client, origin, destination, date, expected):
     """Busca inválida emite SEARCH_ERROR e não chama coletores nem gera estimativas."""
     with client.websocket_connect("/ws/search") as ws:
@@ -233,3 +255,20 @@ def test_websocket_rejects_invalid_search_params(mock_air, mock_road, client, or
     assert expected in event["message"]
     mock_road.assert_not_called()
     mock_air.assert_not_called()
+
+
+@patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
+@patch("app.services.air_quotes.AirQuoteService.get_quotes")
+def test_interline_flight_is_not_paid_for_without_bus_leg(mock_air, mock_road, client):
+    """Sem ônibus até o hub não há rota híbrida: o voo do hub (request paga) não é consultado."""
+    mock_road.return_value = []          # ex: ClickBus recusando acesso
+    mock_air.return_value = [_create_dummy_quote("AIR", "ignav", "LATAM", 350.0)]
+
+    with client.websocket_connect("/ws/search") as ws:
+        ws.send_text(json.dumps({
+            "action": "start_search", "origin": "SAO", "destination": "RIO", "date": "2026-11-20",
+        }))
+        while ws.receive_json()["event"] != "SEARCH_COMPLETED":
+            pass
+
+    assert mock_air.call_count == 1      # só o voo Origem -> Destino
