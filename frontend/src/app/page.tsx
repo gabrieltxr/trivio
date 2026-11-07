@@ -253,6 +253,15 @@ export default function Home() {
           </div>
         )}
 
+        {/* Aviso de Modo Simulação (nenhum coletor real retornou tarifas) */}
+        {quotes.some((q) => q.route_metadata?.is_simulated) && (
+          <div className="mb-6 p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold">
+            Nenhum provedor real retornou tarifas para esta busca. As opções marcadas como
+            &quot;Estimativa simulada&quot; foram calculadas a partir da distância entre as cidades e
+            não representam preços reais nem estão disponíveis para compra.
+          </div>
+        )}
+
         {/* Mensagem de Erro se houver */}
         {error && (
           <div className="mb-6 p-4 rounded-2xl bg-red-50 border border-red-200 text-red-800 text-xs font-semibold">

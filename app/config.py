@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./trivio_dev.db"
     DB_ECHO: bool = False
 
+    # Identificação e Conformidade da Coleta Automatizada
+    # O Trivio se identifica honestamente; nunca se passa por um navegador.
+    # Preencha BOT_INFO_URL/BOT_CONTACT_EMAIL para que os sites possam falar com você.
+    BOT_NAME: str = "TrivioBot"
+    BOT_VERSION: str = "1.0"
+    BOT_INFO_URL: str = ""        # Ex: https://trivio.com.br/bot
+    BOT_CONTACT_EMAIL: str = ""   # Ex: bot@trivio.com.br
+    RESPECT_ROBOTS_TXT: bool = True
+    DEFAULT_CRAWL_DELAY_SECONDS: float = 2.0  # Usado quando o robots.txt não declara Crawl-delay
+
     # Cache Configuration (Smart Cache & Redis)
     REDIS_URL: Optional[str] = None
     CACHE_DEFAULT_TTL_SECONDS: int = 1800  # 30 minutes fallback

@@ -162,6 +162,48 @@ def _get_val(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
+def _leg1_hub_id(quote: Any) -> str:
+    """Identificador do terminal de chegada da perna 1 (ponto de conexão no hub)."""
+    return str(_get_val(quote, "canonical_destination_id") or _get_val(quote, "destination_external_id"))
+
+
+def _leg2_hub_id(quote: Any) -> str:
+    """Identificador do terminal de partida da perna 2 (ponto de conexão no hub)."""
+    return str(_get_val(quote, "canonical_origin_id") or _get_val(quote, "origin_external_id"))
+
+
+def _leg_overhead_minutes(quote: Any) -> int:
+    """Minutos de porta a porta além do tempo de viagem (transfers urbanos + antecedência)."""
+    d2d = int(_get_val(quote, "door_to_door_duration_minutes", 0) or 0)
+    duration = int(_get_val(quote, "duration_minutes", 0) or 0)
+    return max(0, d2d - duration)
+
+
+def _origin_access_minutes(quote: Any) -> int:
+    """Tempo para sair de casa e embarcar na perna 1 (transfer urbano de origem + antecedência)."""
+    meta = _get_val(quote, "route_metadata", {}) or {}
+    if "origin_transfer_minutes" in meta:
+        return int(meta.get("origin_transfer_minutes") or 0) + int(meta.get("checkin_buffer_minutes") or 0)
+    # Sem decomposição disponível: assume todo o overhead da perna 1 no lado da origem (estimativa conservadora)
+    return _leg_overhead_minutes(quote)
+
+
+def _destination_egress_minutes(quote: Any) -> int:
+    """Tempo do desembarque da perna 2 até o destino final (transfer urbano de destino)."""
+    meta = _get_val(quote, "route_metadata", {}) or {}
+    if "destination_transfer_minutes" in meta:
+        return int(meta.get("destination_transfer_minutes") or 0)
+    return 0
+
+
+def _arrival_node(terminal_id: str) -> str:
+    return f"ARR::{terminal_id}"
+
+
+def _departure_node(terminal_id: str) -> str:
+    return f"DEP::{terminal_id}"
+
+
 def calculate_terminal_transfer(
     from_term: Optional[Terminal],
     to_term: Optional[Terminal],
@@ -255,9 +297,12 @@ class VirtualInterliningGraph:
         self.graph.add_node(origin_id, type="ORIGIN")
         self.graph.add_node(destination_id, type="DESTINATION")
 
+        # Nós de hub recebem prefixos distintos de chegada/partida: quando a perna 1 chega
+        # ao mesmo terminal de onde parte a perna 2 (ou a hubs com o mesmo identificador),
+        # um nó único teria seu atributo "type" sobrescrito e a rota seria descartada.
         # Arestas da Perna 1 (Origem -> Hub_Arrival)
         for idx, q1 in enumerate(leg1_quotes):
-            hub_arr_node = str(_get_val(q1, "canonical_destination_id") or _get_val(q1, "destination_external_id"))
+            hub_arr_node = _arrival_node(_leg1_hub_id(q1))
             self.graph.add_node(hub_arr_node, type="HUB_ARRIVAL")
             self.graph.add_edge(
                 origin_id,
@@ -269,7 +314,7 @@ class VirtualInterliningGraph:
 
         # Arestas da Perna 2 (Hub_Departure -> Destino)
         for idx, q2 in enumerate(leg2_quotes):
-            hub_dep_node = str(_get_val(q2, "canonical_origin_id") or _get_val(q2, "origin_external_id"))
+            hub_dep_node = _departure_node(_leg2_hub_id(q2))
             self.graph.add_node(hub_dep_node, type="HUB_DEPARTURE")
             self.graph.add_edge(
                 hub_dep_node,
@@ -280,7 +325,9 @@ class VirtualInterliningGraph:
             )
 
         # Arestas de Transfer entre Hub_Arrival e Hub_Departure
-        for (arr_node, dep_node), transfer in transfer_map.items():
+        for (arr_id, dep_id), transfer in transfer_map.items():
+            arr_node = _arrival_node(arr_id)
+            dep_node = _departure_node(dep_id)
             if self.graph.has_node(arr_node) and self.graph.has_node(dep_node):
                 self.graph.add_edge(
                     arr_node,
@@ -364,9 +411,14 @@ class VirtualInterliningGraph:
                         total_price = round(p1 + transfer.transfer_cost_brl + p2, 2)
 
                         total_duration_minutes = int((arr2 - dep1).total_seconds() // 60) if dep1 and arr2 else 0
-                        d2d_1 = int(_get_val(q1, "door_to_door_duration_minutes", 0) or 0)
-                        d2d_2 = int(_get_val(q2, "door_to_door_duration_minutes", 0) or 0)
-                        total_d2d = d2d_1 + transfer.transfer_duration_minutes + d2d_2
+                        # Porta a porta = acesso até o terminal de origem (transfer urbano + antecedência)
+                        # + tempo corrido da partida da perna 1 à chegada da perna 2 (já inclui a espera
+                        # e o transfer entre terminais no hub) + transfer urbano a partir do destino final.
+                        total_d2d = (
+                            _origin_access_minutes(q1)
+                            + total_duration_minutes
+                            + _destination_egress_minutes(q2)
+                        )
 
                         # Construção de Metadados Ricos
                         metadata: Dict[str, Any] = {
@@ -471,9 +523,9 @@ def build_virtual_interline_routes(
     term_dict = terminal_lookup or {}
 
     for q1 in leg1_quotes:
-        arr_node = str(_get_val(q1, "canonical_destination_id") or _get_val(q1, "destination_external_id"))
+        arr_node = _leg1_hub_id(q1)
         for q2 in leg2_quotes:
-            dep_node = str(_get_val(q2, "canonical_origin_id") or _get_val(q2, "origin_external_id"))
+            dep_node = _leg2_hub_id(q2)
             pair_key = (arr_node, dep_node)
             if pair_key not in transfer_map:
                 t1 = term_dict.get(arr_node)

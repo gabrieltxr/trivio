@@ -17,6 +17,13 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar
 
 import httpx
+
+from app.collectors.compliance import (
+    ComplianceError,
+    NotAuthorizedError,
+    RobotsDisallowedError,
+    compliant_headers,
+)
 from tenacity import (
     AsyncRetrying,
     RetryCallState,
@@ -54,9 +61,18 @@ class CollectorRateLimitError(CollectorError):
     pass
 
 
-class CollectorBlockedError(CollectorError):
-    """Bloqueio anti-bot ou desafio WAF/Cloudflare (HTTP 403) — aciona Tier 2."""
+class CollectorNotAuthorizedError(CollectorError):
+    """O site recusou explicitamente o acesso automatizado (HTTP 401/403).
+
+    Negativa definitiva do operador: o coletor para por aqui. Não há retentativa
+    nem escalonamento para navegador headless — contornar a recusa seria evasão.
+    A liberação é comercial (API oficial / programa de parceiros).
+    """
     pass
+
+
+# Nome anterior, mantido como alias para compatibilidade de imports existentes.
+CollectorBlockedError = CollectorNotAuthorizedError
 
 
 class CollectorParsingError(CollectorError):
@@ -117,30 +133,28 @@ def collector_retry(
 # 3. HTTP Client Padrão com Rotação de Headers
 # ==============================================================================
 
-DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-}
+def get_default_headers(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Cabeçalhos de um cliente automatizado que se identifica honestamente.
+
+    O Trivio NÃO se passa por navegador: o User-Agent declara o robô e oferece
+    contato, conforme `app.collectors.compliance.build_user_agent`.
+    """
+    return compliant_headers(extra)
 
 
 def get_default_async_client(
     timeout: float = 15.0,
     headers: Optional[Dict[str, str]] = None,
 ) -> httpx.AsyncClient:
-    """Cria um cliente HTTPX assíncrono configurado com headers realistas e timeouts seguros."""
-    merged_headers = dict(DEFAULT_HEADERS)
-    if headers:
-        merged_headers.update(headers)
+    """Cliente HTTPX assíncrono identificado, para APIs oficiais e autenticadas.
 
+    Não verifica robots.txt. Use-o apenas para APIs contratadas/credenciadas
+    (ex: Amadeus). Para raspagem de sites públicos use
+    `app.collectors.compliance.CompliantHTTPClient`, que valida o robots.txt,
+    respeita o Crawl-delay e trata 401/403 como negativa definitiva.
+    """
     return httpx.AsyncClient(
-        headers=merged_headers,
+        headers=get_default_headers(headers),
         timeout=httpx.Timeout(timeout, connect=5.0),
         follow_redirects=True,
         limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
@@ -271,7 +285,9 @@ class BaseCollector(ABC):
     modal: str                          # 'ROAD' ou 'AIR'
     timeout_seconds: float = 15.0
     max_retries: int = 3
-    supports_headless_fallback: bool = False
+    # Marcado quando o provedor recusa acesso automatizado (401/403 ou robots.txt).
+    # Sinaliza que o desbloqueio é comercial, não técnico.
+    access_denied: bool = False
 
     @abstractmethod
     async def fetch_quotes(
@@ -284,22 +300,13 @@ class BaseCollector(ABC):
         """
         pass
 
-    async def fallback_fetch_quotes(
-        self, origin_ext_id: str, dest_ext_id: str, travel_date: str
-    ) -> List[StandardizedQuote]:
-        """Tier 2 (Fallback Contingência via Headless/Playwright).
-
-        Acionado se a API primária HTTPX retornar bloqueio severo (ex: HTTP 403 / Cloudflare).
-        """
-        raise NotImplementedError(f"O provedor '{self.provider_name}' não possui fallback headless implementado.")
-
     async def safe_fetch(
         self, origin_ext_id: str, dest_ext_id: str, travel_date: str
     ) -> List[StandardizedQuote]:
         """Executa a coleta capturando métricas de latência e protegendo contra falhas fatais.
 
-        Se o coletor primário sofrer bloqueio anti-bot e tiver suporte a fallback,
-        aciona automaticamente a camada Tier 2.
+        Se o provedor recusar o acesso automatizado (401/403) ou o robots.txt proibir
+        a URL, o coletor registra a negativa e devolve lista vazia. Não há contorno.
         """
         start_time = time.perf_counter()
         logger.info(
@@ -324,26 +331,21 @@ class BaseCollector(ABC):
             )
             return quotes
 
-        except CollectorBlockedError as blocked_err:
-            logger.warning(
-                f"[{self.provider_name}] Bloqueio anti-bot detectado ({blocked_err}). "
-                f"Suporte a fallback headless: {self.supports_headless_fallback}"
+        except (CollectorNotAuthorizedError, NotAuthorizedError) as denied:
+            # Recusa explícita do operador do site. Respeitamos e paramos aqui.
+            self.access_denied = True
+            logger.error(
+                f"[{self.provider_name}] Acesso automatizado NEGADO pelo provedor: {denied} "
+                "Nenhuma tentativa de contorno será feita. Para obter dados deste provedor, "
+                "solicite acesso à API oficial ou ao programa de parceiros."
             )
-            if self.supports_headless_fallback:
-                try:
-                    fallback_quotes = await self.fallback_fetch_quotes(origin_ext_id, dest_ext_id, travel_date)
-                    elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
-                    for q in fallback_quotes:
-                        if "collector_stats" not in q.route_metadata:
-                            q.route_metadata["collector_stats"] = {}
-                        q.route_metadata["collector_stats"].update({
-                            "provider": self.provider_name,
-                            "tier": "tier_2_headless_fallback",
-                            "latency_ms": elapsed_ms,
-                        })
-                    return fallback_quotes
-                except Exception as fb_err:
-                    logger.error(f"[{self.provider_name}] Falha também no fallback headless: {fb_err}")
+            return []
+
+        except RobotsDisallowedError as robots_err:
+            self.access_denied = True
+            logger.error(
+                f"[{self.provider_name}] Requisição não realizada por proibição no robots.txt: {robots_err}"
+            )
             return []
 
         except Exception as exc:

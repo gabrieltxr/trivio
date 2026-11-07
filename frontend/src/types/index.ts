@@ -6,6 +6,21 @@ export type TravelMode = "AIR" | "ROAD" | "ROAD_AIR" | "HYBRID";
 
 export type TripType = "round_trip" | "one_way" | "intermodal";
 
+export type LocationType = "hub" | "airport" | "bus_station";
+
+export interface LocationSuggestion {
+  id: string;
+  type: LocationType;
+  name: string;
+  city: string;
+  state: string;
+  code: string;
+  modal: "ALL" | "AIR" | "ROAD";
+  title: string;
+  subtitle: string;
+  highlight?: string;
+}
+
 export interface Hub {
   id: number;
   ibge_code: string;
@@ -49,6 +64,10 @@ export interface PriceThermometerData {
   sample_size?: number;
   difference_percentage?: number | null;
   recommendation: string;
+  /** Origem da série: "antt_monitriip" (bilhetes oficiais) ou "coletas_trivio". */
+  source?: string;
+  /** Janela de referência da série oficial (ex: "2024-09"). */
+  reference_period?: string | null;
 }
 
 export interface FareQuote {
@@ -89,6 +108,10 @@ export interface FareQuote {
     }>;
     is_virtual_interline?: boolean;
     transfer_details?: Record<string, unknown>;
+    /** Estimativa gerada pelo Trivio sem preço real de mercado (não disponível para compra). */
+    is_simulated?: boolean;
+    simulation_notice?: string;
+    booking_url?: string;
     [key: string]: unknown;
   };
 }

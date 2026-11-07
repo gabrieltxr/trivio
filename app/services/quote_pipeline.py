@@ -59,6 +59,17 @@ def find_terminal_by_external_id(
     return None
 
 
+NON_PERSISTABLE_PROVIDERS = {"trivio_simulation", "trivio_interliner"}
+
+
+def is_persistable_quote(quote: StandardizedQuote) -> bool:
+    """Indica se a cotação representa um preço real de mercado que pode ir para o banco."""
+    if quote.provider_source in NON_PERSISTABLE_PROVIDERS:
+        return False
+    meta = quote.route_metadata or {}
+    return not (meta.get("is_simulated") or meta.get("is_virtual_interline"))
+
+
 class QuotePipeline:
     """Orquestrador do pipeline de dados para cotações coletadas."""
 
@@ -84,11 +95,18 @@ class QuotePipeline:
             quote.canonical_origin_id = origin_term.official_code or str(origin_term.id)
             quote.route_metadata["origin_terminal_id"] = origin_term.id
             quote.route_metadata["origin_terminal_name"] = origin_term.name
+            # Município: chave de busca nas estatísticas oficiais (ANTT trabalha por cidade)
+            if origin_term.hub:
+                quote.route_metadata["origin_city"] = origin_term.hub.name
+                quote.route_metadata["origin_state"] = origin_term.hub.state
 
         if dest_term:
             quote.canonical_destination_id = dest_term.official_code or str(dest_term.id)
             quote.route_metadata["destination_terminal_id"] = dest_term.id
             quote.route_metadata["destination_terminal_name"] = dest_term.name
+            if dest_term.hub:
+                quote.route_metadata["destination_city"] = dest_term.hub.name
+                quote.route_metadata["destination_state"] = dest_term.hub.state
 
         # Injeta custos e tempos de transfer urbano
         origin_transfer_cost = origin_term.estimated_transfer_cost_brl if origin_term else 0.0
@@ -102,6 +120,10 @@ class QuotePipeline:
         quote.door_to_door_duration_minutes = (
             quote.duration_minutes + origin_transfer_time + dest_transfer_time + checkin_buffer
         )
+        # Decomposição usada pelo interliner para somar corretamente o porta a porta de rotas híbridas
+        quote.route_metadata["origin_transfer_minutes"] = origin_transfer_time
+        quote.route_metadata["destination_transfer_minutes"] = dest_transfer_time
+        quote.route_metadata["checkin_buffer_minutes"] = checkin_buffer
 
         # Enriquece com avaliação qualitativa de prós, contras e contratempos
         enrich_quote_with_evaluation(quote)
@@ -168,6 +190,9 @@ class QuotePipeline:
         session: Session,
     ) -> List[FareQuote]:
         """Executa enriquecimento canônico, deduplicação em memória e upsert transacional no banco."""
+        # Cotações simuladas e rotas sintetizadas pelo interliner não são preços reais
+        # de mercado: persisti-las contaminaria o histórico do Termômetro de Preço.
+        quotes = [q for q in quotes if is_persistable_quote(q)]
         if not quotes:
             return []
 
@@ -198,9 +223,15 @@ class QuotePipeline:
             if existing_quote:
                 # Se a nova cotação for mais barata, atualiza a melhor oferta
                 if quote.total_effective_price < existing_quote.total_effective_price:
+                    # Atualiza todos os componentes para manter total = soma das partes
+                    # e o Trivio Score coerente com o preço e o tempo porta a porta gravados.
                     existing_quote.base_price = quote.base_price
                     existing_quote.taxes_price = quote.taxes_price
+                    existing_quote.baggage_fee_estimate = quote.baggage_fee_estimate
+                    existing_quote.transfer_cost_estimate = quote.transfer_cost_estimate
                     existing_quote.total_effective_price = quote.total_effective_price
+                    existing_quote.door_to_door_duration_minutes = quote.door_to_door_duration_minutes
+                    existing_quote.trivio_score = quote.trivio_score
                     existing_quote.provider_source = quote.provider_source
                     existing_quote.route_metadata = quote.route_metadata
                     existing_quote.collected_at = datetime.now(timezone.utc)

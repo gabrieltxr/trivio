@@ -269,7 +269,6 @@ class AmadeusCollector(BaseCollector):
 
     provider_name = "amadeus"
     modal = "AIR"
-    supports_headless_fallback = False
 
     def __init__(
         self,

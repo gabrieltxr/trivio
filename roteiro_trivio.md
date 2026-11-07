@@ -4,7 +4,7 @@
 > **Project Name:** Trivio (Trip + Via / Cruzamento de 3 caminhos: Ar, Terra e Melhor Custo-Benefício)  
 > **Domain:** Intermodal Travel Intelligence, Virtual Interlining & Price Aggregation (Brazil - National Scope)  
 > **Primary Stack:**
->   - **Backend & Collectors:** Python 3.11+, SQLAlchemy 2.0+ (Async), Httpx (Reverse Engineering/REST), Playwright (Fallback Scraper), Tenacity (Resilience), NetworkX (Virtual Interlining Graph), GeoPy & RapidFuzz (Geo & Entity Matching), Polars (Price Thermometer), Redis (Smart Cache & Ephemeral Quotes), FastAPI (REST + WebSockets Streaming)
+>   - **Backend & Collectors:** Python 3.11+, SQLAlchemy 2.0+, Httpx (REST/JSON), Protego (robots.txt compliance), Tenacity (Resilience), NetworkX (Virtual Interlining Graph), GeoPy & RapidFuzz (Geo & Entity Matching), Polars (Price Thermometer), Redis (Smart Cache & Ephemeral Quotes), FastAPI (REST + WebSockets Streaming)
 >   - **Frontend Web:** Next.js 14+ (App Router), React, TypeScript, Tailwind CSS, Lucide Icons
 >   - **Persistence:** PostgreSQL / SQLite (Dev), Redis (Smart Cache & Look-to-Book Optimizer)
 
@@ -18,13 +18,13 @@
 
 1. **Custo Efetivo Total:** Soma tarifa base + taxas de embarque + estimativa de bagagem + custo de deslocamento até o terminal (aeroporto distante vs. rodoviária central).
 2. **Mapeamento de Divergência de Rotas & Contratempos:** Identifica se uma viação faz rota expressa ou "pinga-pinga" (paradas intermediárias excessivas), trechos de serra/obras, ou conexões aéreas curtas com risco de perda de voo ou troca de aeroporto.
-3. **Engenharia Reversa HTTPX (Tier 1) + Fallback Playwright (Tier 2):** Máxima velocidade e baixo consumo de RAM/CPU consumindo diretamente APIs REST/XHR internas; o Playwright é mantido exclusivamente como último recurso para contingência de bloqueios severos.
+3. **Coleta Identificada e em Conformidade:** Consumo assíncrono de APIs REST/JSON com `httpx`, sempre como um agente identificado (`TrivioBot/…` com canal de contato), verificando o `robots.txt` de cada host antes da requisição, respeitando `Crawl-delay` e `Retry-After`. **HTTP 401/403 é tratado como negativa definitiva do operador do site:** sem retentativa, sem navegador headless, sem contorno. Provedor que recusa acesso automatizado só é liberado por via comercial (API oficial ou programa de parceiros).
 4. **Streaming Progressivo (WebSockets):** As cotações não esperam todos os provedores terminarem; elas vão "pipocando" na interface em tempo real assim que cada modal ou empresa responde.
 5. **Smart Cache & TTL Dinâmico (Decolar Pattern):** TTL baseado na proximidade da viagem ($\le 2$ dias: 30 min; $> 21$ dias: 24 horas), eliminando 90% das requisições e blindando contra bloqueios de IP (*Look-to-Book optimization*).
 6. **Deduplicação & "Code-Share" Multi-Canal via SHA-256:** Agrupamento de ofertas idênticas comercializadas por múltiplos canais (ex: Guanabara vendida na ClickBus e DeÔnibus, voo Gol na Amadeus e Kiwi) usando assinatura `dedup_signature`, exibindo o canal mais barato.
 7. **Virtual Interlining Intermodal (Kiwi.com Pattern):** Grafo em memória (`networkx`) que combina trechos rodoviários e aéreos independentes quando a conexão híbrida (ex: Ônibus até capital vizinha + Voo direto) supera o custo-benefício das rotas diretas tradicionais.
 8. **Hub Catchment Area / Raio Geográfico (Rome2Rio / Skyscanner Pattern):** Expansão geodésica (`geopy` / `h3`) que busca terminais alternativos em um raio configurável (ex: 100-120 km da cidade de origem/destino), somando o deslocamento terrestre na equação.
-9. **Price Thermometer / Compra Preditiva (Hopper / Google Flights Pattern):** Análise estatística de séries históricas ($P_{25}, P_{50}, P_{75}$) via `polars` que classifica se a tarifa atual está *Barata*, *Na Média* ou *Cara* para aquela rota e época.
+9. **Price Thermometer / Compra Preditiva (Hopper / Google Flights Pattern):** Análise estatística de séries históricas ($P_{25}, P_{50}, P_{75}$) via `polars` que classifica se a tarifa atual está *Barata*, *Na Média* ou *Cara* para aquela rota e época. A série de referência do rodoviário vem dos **dados abertos da ANTT (Monitriip)**: bilhetes efetivamente comercializados, publicados mensalmente sob CC-BY — preço transacionado real, não estimativa.
 10. **Intermodal Hacker Fares (Kayak Pattern):** Combinação assimétrica de bilhetes *one-way* independentes (ex: Ida de Avião para ganhar tempo + Volta de Ônibus Leito noturno para economizar diária e passagem).
 11. **Trivio Score / Índice de Atrito (Hipmunk "Agony Index" Pattern):** Algoritmo de ranqueamento que pondera Preço Efetivo + Tempo Porta a Porta + Penalidades de Atrito (madrugada, baldeações, excesso de paradas).
 
@@ -54,13 +54,21 @@ trivio/
 │   │   ├── main.py                # Inicialização FastAPI e middlewares CORS
 │   │   ├── routes.py              # Endpoints REST (cidades, terminais, cotações)
 │   │   └── websocket.py           # WebSocket Hub para streaming de cotações em tempo real
-│   ├── collectors/                # Motores de ingestão e scraping de preços (com Tenacity Retry)
+│   ├── collectors/                # Motores de ingestão de preços (com Tenacity Retry)
 │   │   ├── __init__.py
 │   │   ├── base.py                # Contrato abstrato (BaseCollector) e DTO (StandardizedQuote)
-│   │   ├── road/                  # Coletores Rodoviários (Engenharia Reversa HTTPX + Fallback Playwright)
-│   │   │   └── __init__.py
+│   │   ├── compliance.py          # robots.txt (Protego), User-Agent identificado, ritmo e recusas
+│   │   ├── antt/                  # Dados abertos da ANTT (licença CC-BY)
+│   │   │   ├── portal.py          # Descoberta/download pelos caminhos que o robots.txt permite
+│   │   │   └── monitriip.py       # Detecção de esquema e agregação de tarifas históricas
+│   │   ├── road/                  # Coletores Rodoviários (requer autorização do provedor)
+│   │   │   ├── __init__.py
+│   │   │   └── taxonomy.py        # Classes de serviço (Leito, Semi-Leito, Convencional)
 │   │   └── air/                   # Coletores Aéreos (Amadeus, Duffel, Tequila, ANAC Microdados)
 │   │       └── __init__.py
+│   ├── services/                  # Orquestração de Pipeline de Dados
+│   │   ├── __init__.py
+│   │   └── quote_pipeline.py      # Resolução canônica, transfer urbano, dedup e persistência
 │   └── analyzers/                 # Motores Analíticos, Grafos e Regras de Negócio
 │       ├── __init__.py
 │       ├── route_evaluator.py     # Geração de Prós, Contras e Contratempos da rota
@@ -78,6 +86,7 @@ trivio/
 │   └── tsconfig.json
 ├── scripts/
 │   ├── init_db.py                 # Cria tabelas e executa seed inicial de localidades
+│   ├── import_antt_fares.py       # Importa tarifas históricas reais da ANTT (Monitriip)
 │   └── test_collector.py          # CLI runner (Rich) para testar busca, cache e ranking no terminal
 ├── tests/
 │   └── __init__.py
@@ -101,10 +110,11 @@ pydantic>=2.5.0
 pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
 
-# HTTP, Scraping & Resilience (Decolar / OTA Patterns)
+# HTTP, Compliance & Resilience
 httpx>=0.26.0
-playwright>=1.41.0
+protego>=0.3.0        # robots.txt (spec do Google: regra mais específica vence)
 tenacity>=8.2.0
+playwright>=1.41.0    # Apenas automação de preview visual do frontend próprio
 
 # Graph, Geo & Entity Resolution (Kiwi / Rome2Rio / Kayak Patterns)
 networkx>=3.2.0
@@ -228,12 +238,29 @@ class FareQuote(Base):
 
 Todos os coletores implementam `BaseCollector`, utilizando `tenacity` para retentativas automáticas com *exponential backoff* e gerando uma assinatura de deduplicação padronizada.
 
-### Estratégia de Coleta em Duas Camadas:
-1. **Tier 1 (Primário - Alta Eficiência): Engenharia Reversa com `httpx` (Assíncrono):**
-   - Interceptação e consumo direto das APIs REST/JSON internas (XHR) utilizadas pelos frontends das plataformas.
-   - Baixo consumo de recursos, suporte a alta concorrência e respostas sub-segundo.
-2. **Tier 2 (Fallback - Contingência): Headless com `playwright`:**
-   - Acionado estritamente em caso de barreiras anti-bot severas (Cloudflare, CAPTCHAs dinâmicos) ou criptografia de payload no cliente.
+### Estratégia de Coleta (`app/collectors/compliance.py`):
+
+Toda requisição a sites de terceiros passa pelo `CompliantHTTPClient`, que garante quatro condições:
+
+1. **Identificação honesta:** o `User-Agent` declara o robô e oferece contato
+   (`TrivioBot/1.0 (+https://…; contato@…)`). O Trivio nunca se passa por navegador.
+2. **Autorização pelo `robots.txt`:** cada URL é verificada antes da requisição com `protego`.
+   > ⚠️ Não usar `urllib.robotparser` da stdlib: ele aplica a *primeira* regra que casa, então
+   > um `Allow: /` no topo anula todos os `Disallow` seguintes. A especificação do Google
+   > (implementada pelo `protego`) usa a regra *mais específica*.
+   > Se o `robots.txt` não puder ser lido (5xx ou falha de rede), assume-se proibição.
+3. **Ritmo educado:** respeita `Crawl-delay`, mantém intervalo mínimo por host e honra `Retry-After` (HTTP 429).
+4. **Obediência a recusas:** HTTP 401/403 vira `NotAuthorizedError` e encerra a coleta. O coletor marca
+   `access_denied` e devolve lista vazia. **Não existe escalonamento para navegador headless:**
+   contornar a recusa seria evasão de detecção de bot.
+
+APIs oficiais e credenciadas (ex: Amadeus) usam `get_default_async_client`, que também se identifica,
+mas dispensa a checagem de `robots.txt` por serem acessos contratados.
+
+**Estado dos provedores rodoviários:** a ClickBus proíbe no `robots.txt` as páginas de resultado
+(`Disallow: /*?departureDate=`) e seu WAF responde 403 ao endpoint interno. Portanto não há coleta
+autorizada hoje; o acesso depende da API B2B de parceiros. Sem provedor real, o Trivio exibe
+estimativas explicitamente rotuladas como simulação, que nunca são persistidas no banco.
 
 ```python
 from dataclasses import dataclass, field
@@ -370,7 +397,7 @@ Siga a ordem exata das fases abaixo durante a implementação assistida no **Ant
 ### Phase 2: Smart Cache, Deduplication & Collector Core
 - [x] **Step 2.1:** Implementar `app/cache/ttl_policy.py` e `app/cache/deduplicator.py` para filtrar cotações repetidas por assinatura SHA-256 mantendo a melhor oferta de compra.
 - [x] **Step 2.2:** Implementar `app/collectors/base.py` com `StandardizedQuote`, cálculo de `dedup_signature` e resiliência via `tenacity`.
-- [x] **Step 2.3:** Implementar o primeiro coletor rodoviário em `app/collectors/road/` priorizando Engenharia Reversa com `httpx` (JSON XHR), mantendo `playwright` apenas como fallback para bloqueios severos.
+- [x] **Step 2.3:** Implementar o primeiro coletor rodoviário em `app/collectors/road/` usando `httpx` através do `CompliantHTTPClient` (robots.txt, identificação e ritmo), tratando 401/403 como negativa definitiva do provedor.
 - [x] **Step 2.4:** Implementar o coletor aéreo em `app/collectors/air/` normalizando taxas de embarque, antecedência de check-in e franquia de bagagem.
 
 ### Phase 3: Intelligence Engines (Trivio Score, Pros/Cons & Price Thermometer)

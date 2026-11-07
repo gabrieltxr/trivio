@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from app.collectors.base import CollectorBlockedError
+from app.collectors.compliance import NotAuthorizedError, RobotsDisallowedError
 from app.collectors.road.clickbus import (
     ClickBusCollector,
     normalize_bus_service_class,
@@ -120,6 +120,24 @@ def test_parse_clickbus_trips_cents_normalization():
 # 3. Testes do ClickBusCollector com Mock de HTTP
 # ==============================================================================
 
+@pytest.fixture(autouse=True)
+def permissive_robots(monkeypatch):
+    """Isola os testes de rede: robots.txt permissivo e sem espera entre requisições."""
+    from app.collectors import compliance
+
+    class AllowAllRobots:
+        async def can_fetch(self, url: str) -> bool:
+            return True
+
+        async def crawl_delay(self, url: str) -> float:
+            return 0.0
+
+        async def sitemaps(self, url: str):
+            return []
+
+    monkeypatch.setattr(compliance, "_shared_robots", AllowAllRobots())
+    monkeypatch.setattr(compliance, "_shared_limiter", compliance.PolitenessLimiter())
+
 @pytest.mark.asyncio
 async def test_clickbus_collector_fetch_quotes_success(monkeypatch):
     """Valida chamada Tier 1 bem-sucedida através de mock do transporte HTTPX."""
@@ -150,22 +168,56 @@ async def test_clickbus_collector_fetch_quotes_success(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_clickbus_collector_detects_anti_bot_and_raises_blocked(monkeypatch):
-    """Quando o Tier 1 receber 403 (Azion/WAF), deve disparar CollectorBlockedError."""
+async def test_clickbus_403_is_a_final_denial(monkeypatch):
+    """HTTP 403 é recusa explícita: vira NotAuthorizedError, sem contorno."""
     collector = ClickBusCollector()
 
-    class MockBlockedResponse:
+    class MockDeniedResponse:
         status_code = 403
         text = "ST: Forbidden request"
+        headers: dict = {}
 
     async def mock_get(self, url, *args, **kwargs):
-        return MockBlockedResponse()
+        return MockDeniedResponse()
 
     monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
 
-    with pytest.raises(CollectorBlockedError, match="Bloqueio WAF/Azion"):
+    with pytest.raises(NotAuthorizedError, match="recusou o acesso automatizado"):
         await collector.fetch_quotes(
             origin_ext_id="sao-paulo-tiete-sp",
             dest_ext_id="rio-de-janeiro-novo-rio-rj",
             travel_date="2026-11-20",
         )
+
+    # E o safe_fetch encerra a coleta registrando a negativa, sem tentar alternativas
+    quotes = await collector.safe_fetch("sao-paulo-tiete-sp", "rio-de-janeiro-novo-rio-rj", "2026-11-20")
+    assert quotes == []
+    assert collector.access_denied is True
+
+
+@pytest.mark.asyncio
+async def test_clickbus_does_not_request_when_robots_disallows(monkeypatch):
+    """Se o robots.txt proíbe a URL, nenhuma requisição chega a ser emitida."""
+    from app.collectors import compliance
+
+    class DenyAllRobots:
+        async def can_fetch(self, url: str) -> bool:
+            return False
+
+        async def crawl_delay(self, url: str) -> float:
+            return 0.0
+
+    monkeypatch.setattr(compliance, "_shared_robots", DenyAllRobots())
+
+    requested = []
+
+    async def mock_get(self, url, *args, **kwargs):
+        requested.append(url)
+        raise AssertionError("Nenhuma requisição deveria ser emitida.")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    with pytest.raises(RobotsDisallowedError):
+        await ClickBusCollector().fetch_quotes("sao-paulo-tiete-sp", "rio-de-janeiro-novo-rio-rj", "2026-11-20")
+
+    assert requested == []

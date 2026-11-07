@@ -35,6 +35,8 @@ export default function QuoteCard({ quote, isBestScore = false }: QuoteCardProps
   const cons = meta.cons || [];
   const setbacks = meta.potential_setbacks || [];
   const thermometer: PriceThermometerData | undefined = meta.price_thermometer;
+  const isSimulated = meta.is_simulated === true;
+  const bookingUrl = !isSimulated && typeof meta.booking_url === "string" ? meta.booking_url : null;
 
   // Formata hora no padrão HH:MM
   const formatTime = (isoString: string) => {
@@ -180,6 +182,14 @@ export default function QuoteCard({ quote, isBestScore = false }: QuoteCardProps
                     Conexão Híbrida
                   </span>
                 )}
+                {isSimulated && (
+                  <span
+                    title={meta.simulation_notice || "Estimativa simulada, sem tarifa real de mercado."}
+                    className="px-2.5 py-0.5 rounded-full bg-slate-200 text-slate-700 text-[11px] font-bold border border-slate-300"
+                  >
+                    Estimativa simulada
+                  </span>
+                )}
               </div>
             </div>
 
@@ -272,15 +282,21 @@ export default function QuoteCard({ quote, isBestScore = false }: QuoteCardProps
                 {showDetails ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
               </button>
 
-              <a
-                href={(meta.booking_url as string) || "#"}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 active:scale-95 text-white font-bold px-4 py-2 rounded-xl text-xs sm:text-sm shadow-md shadow-orange-500/20 transition-all flex items-center gap-1.5"
-              >
-                <span>Ver Oferta</span>
-                <ExternalLink className="w-3.5 h-3.5" />
-              </a>
+              {bookingUrl ? (
+                <a
+                  href={bookingUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 active:scale-95 text-white font-bold px-4 py-2 rounded-xl text-xs sm:text-sm shadow-md shadow-orange-500/20 transition-all flex items-center gap-1.5"
+                >
+                  <span>Ver Oferta</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              ) : (
+                <span className="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold text-slate-500 bg-slate-100 border border-slate-200">
+                  {isSimulated ? "Indisponível para compra" : "Sem link de oferta"}
+                </span>
+              )}
             </div>
 
           </div>
@@ -353,9 +369,17 @@ export default function QuoteCard({ quote, isBestScore = false }: QuoteCardProps
               </div>
 
               {thermometer?.recommendation && (
-                <p className="text-[11px] text-slate-500 pt-1 italic">
-                  💡 {thermometer.recommendation}
-                </p>
+                <div className="pt-1 space-y-1">
+                  <p className="text-[11px] text-slate-500 italic">
+                    💡 {thermometer.recommendation}
+                  </p>
+                  {thermometer.source === "antt_monitriip" && (
+                    <p className="text-[10px] text-slate-400">
+                      Fonte: bilhetes comercializados publicados pela ANTT
+                      {thermometer.reference_period ? ` (${thermometer.reference_period})` : ""}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
 

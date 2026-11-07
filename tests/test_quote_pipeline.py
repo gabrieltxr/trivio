@@ -191,3 +191,77 @@ def test_timezone_aware_madrugada_detection():
     # O motor deve detectar que às 05:30 UTC é 02:30 no Brasil e alertar madrugada
     assert "madrugada" in cons_text.lower()
     assert "02:30" in cons_text
+
+
+def test_simulated_and_interline_quotes_are_never_persisted(db_session):
+    """Estimativas simuladas e rotas sintetizadas pelo interliner não podem ir para o histórico."""
+    dep = datetime(2026, 11, 20, 8, 30)
+    common = dict(
+        origin_external_id="TIETE",
+        destination_external_id="NOVO_RIO",
+        modal="ROAD",
+        service_class="SEMI_LEITO",
+        departure_time=dep,
+        arrival_time=dep.replace(hour=14),
+        duration_minutes=330,
+        base_price=150.0,
+    )
+    simulated = StandardizedQuote(
+        provider_source="trivio_simulation",
+        carrier_name="Ônibus Semi-Leito (estimativa)",
+        route_metadata={"is_simulated": True},
+        **common,
+    )
+    flagged = StandardizedQuote(
+        provider_source="clickbus",
+        carrier_name="Viação Fantasma",
+        route_metadata={"is_simulated": True},
+        **common,
+    )
+    interline = StandardizedQuote(
+        provider_source="trivio_interliner",
+        carrier_name="Ônibus + Voo",
+        route_metadata={"is_virtual_interline": True},
+        **common,
+    )
+    real = StandardizedQuote(
+        provider_source="clickbus",
+        carrier_name="Viação Real",
+        route_metadata={},
+        **common,
+    )
+
+    saved = process_and_persist_quotes([simulated, flagged, interline, real], db_session)
+
+    assert [fq.carrier_name for fq in saved] == ["Viação Real"]
+    assert db_session.query(FareQuote).count() == 1
+
+
+def test_enrich_quote_exposes_city_for_official_statistics(db_session):
+    """O pipeline precisa expor o município: a série da ANTT é por cidade, não por terminal."""
+    dep = datetime(2026, 11, 20, 8, 30)
+    quote = StandardizedQuote(
+        origin_external_id="sao-paulo-tiete-sp",
+        destination_external_id="rio-de-janeiro-novo-rio-rj",
+        modal="ROAD",
+        provider_source="clickbus",
+        carrier_name="Viação Cometa",
+        service_class="SEMI_LEITO",
+        departure_time=dep,
+        arrival_time=dep.replace(hour=14),
+        duration_minutes=330,
+        base_price=150.0,
+    )
+
+    enriched, origin_term, dest_term = QuotePipeline.enrich_quote(quote, db_session)
+
+    assert origin_term is not None and dest_term is not None
+    meta = enriched.route_metadata
+    assert meta["origin_city"] == "São Paulo"
+    assert meta["origin_state"] == "SP"
+    assert meta["destination_city"] == "Rio de Janeiro"
+    assert meta["destination_state"] == "RJ"
+    # E a decomposição de tempo usada pelo interliner
+    assert meta["origin_transfer_minutes"] == 15
+    assert meta["destination_transfer_minutes"] == 20
+    assert meta["checkin_buffer_minutes"] == 20

@@ -8,6 +8,8 @@ export interface SearchCompletedStats {
   totalElapsedMs: number;
   cheapestPrice: number;
   bestTrivioScore: number;
+  /** true quando nenhum coletor real respondeu e os resultados são estimativas simuladas. */
+  isSimulated: boolean;
   timestamp: string;
 }
 
@@ -130,6 +132,13 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
           break;
         }
 
+        case "SEARCH_ERROR": {
+          // Parâmetros inválidos ou localidade não reconhecida pelo backend
+          setIsSearching(false);
+          setError(data.message || "Não foi possível iniciar a busca.");
+          break;
+        }
+
         case "PROVIDER_ERROR": {
           // Erro pontual de um provedor (ex: timeout Amadeus) não derruba a busca
           console.warn(`[Trivio WS] Aviso do provedor ${data.provider}:`, data.error);
@@ -143,6 +152,7 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
             totalElapsedMs: data.total_elapsed_ms,
             cheapestPrice: data.cheapest_effective_price,
             bestTrivioScore: data.best_trivio_score,
+            isSimulated: data.is_simulated === true,
             timestamp: data.timestamp,
           });
           break;
