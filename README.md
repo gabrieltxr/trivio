@@ -80,7 +80,7 @@ flowchart TD
 - **Geolocalização:** Geopy / Geographiclib (distâncias geodésicas e raios de abrangência regional).
 - **Resiliência de Rede:** HTTPX + Tenacity (exponential backoff com jitter e isolamento bulkhead).
 - **Conformidade de Coleta:** Protego (robots.txt pela spec do Google), agente identificado e respeito a `Crawl-delay` / `Retry-After`.
-- **Qualidade & Testes:** Pytest, Pytest-Asyncio (106 testes automatizados).
+- **Qualidade & Testes:** Pytest, Pytest-Asyncio (223 testes automatizados).
 
 ### Frontend (Node.js 20+ / Next.js 14)
 - **Arquitetura:** Next.js 14 (App Router, Server & Client Components).
@@ -114,10 +114,88 @@ de parceiros), nunca técnico.
 
 | Provedor | Modal | Situação |
 |---|---|---|
-| **Ignav** | Aéreo (preço ao vivo) | ✅ API contratada, cobrada por request. Configure `IGNAV_API_KEY` no `.env`. |
-| **ANAC** (microdados de tarifas) | Aéreo (régua do Termômetro) | ✅ Dados abertos oficiais. Importe com `scripts/import_anac_fares.py`. |
+| **Ignav** | Aéreo (preço ao vivo) | ✅ API contratada, com chave (`IGNAV_API_KEY`) e cobrança por request. Não é raspagem. Ver *Preços aéreos ao vivo*. |
+| **ANAC** (microdados de tarifas) | Aéreo (régua do Termômetro) | ✅ Dados abertos oficiais, sem chave. Ver *Régua aérea*. |
 | **ANTT (dados abertos)** | Rodoviário | ✅ Público e sem chave. Tarifas **históricas reais** sob CC-BY (a API CKAN é proibida pelo `robots.txt`; usamos os caminhos permitidos). |
 | **ClickBus** | Rodoviário | ⛔ Sem autorização. O `robots.txt` proíbe as páginas de resultado (`Disallow: /*?departureDate=`) e o WAF responde 403 ao endpoint interno. Depende da API B2B de parceiros. |
+
+> **Regra para APIs contratadas.** Provedores como o Ignav são acessados com chave e contrato. O
+> cliente identificado de APIs não consulta `robots.txt`, porque o acesso já é autorizado pelo
+> contrato. Isso não vale para sites: raspagem continua passando pelo `CompliantHTTPClient`.
+
+### Preços aéreos ao vivo (Ignav)
+
+A busca aérea consulta a [Ignav Flight Prices API](https://ignav.com/docs) em BRL (`IGNAV_MARKET=BR`)
+e devolve voos só de ida, de LATAM, GOL e Azul, com `observed_at` e o status do preço
+(`verified` ou `unverified`).
+
+Toda request ao Ignav é paga. Por isso, qualquer consulta passa pelo `AirQuoteService`
+([`app/services/air_quotes.py`](app/services/air_quotes.py)), nesta ordem:
+
+1. **Cache de consultas** (tabela `provider_queries`): consultas iguais válidas por até 2 h, ou
+   30 min para voos próximos, respondem sem nova request. Consultas vazias também são guardadas.
+2. **Orçamento mensal** (`AIR_MONTHLY_REQUEST_BUDGET`, padrão 800): ao atingir o teto, o aéreo para
+   de consultar e a interface recebe um `PROVIDER_ERROR` com `reason: "budget_exhausted"`.
+3. **Coalescência:** buscas idênticas simultâneas dividem uma única request.
+4. **Coletor** (`app/collectors/air/ignav.py`): uma chamada = uma request paga.
+
+Motivos de falha informados ao frontend, em vez de uma lista vazia com aparência de sucesso:
+
+| `reason` | Quando |
+|---|---|
+| `not_configured` | `IGNAV_API_KEY` ausente |
+| `disabled` | `AIR_MONTHLY_REQUEST_BUDGET=0` |
+| `budget_exhausted` | Teto mensal atingido |
+| `provider_error` | Erro do provedor (timeout, 402, 429, 503, etc.) |
+
+**Custo.** O Ignav oferece 1.000 requests grátis, uma única vez. Depois disso, cada 1.000
+requests bem-sucedidas custam US$ 2, cobrados por mês. Um cartão de crédito precisa estar
+cadastrado na conta para que as requests continuem. Sem ele, a API responde HTTP 402.
+
+**Preço e taxas.** O Ignav devolve o total do bilhete, com taxas. A régua da ANAC mede só a tarifa,
+então o Trivio separa uma taxa de embarque estimada (`DEFAULT_DOMESTIC_BOARDING_FEE_BRL`, padrão
+R$ 40) para comparar. Os valores por aeroporto ficam em
+[`boarding_fees.py`](app/collectors/air/boarding_fees.py) e ainda não estão preenchidos.
+
+**Link de compra.** A busca não traz o link. Ele é resolvido só no clique, por
+`GET /api/v1/air/booking-link`, que custa uma request e fica em cache por 30 min. A companhia
+aérea é preferida quando oferece o voo exato.
+
+**Histórico.** Cotações ao vivo não são gravadas no histórico permanente (`FareQuote`) por padrão,
+porque os termos de uso do provedor ainda não foram conferidos. Isso é controlado por
+`AIR_PERSIST_LIVE_QUOTES`.
+
+**Consumo.** `GET /api/v1/air/usage` mostra as requests usadas e as restantes no mês, contadas pelo
+próprio Trivio. Esse número não reflete o saldo de crédito do Ignav, que só aparece no painel do
+provedor.
+
+**Virtual Interlining.** O voo do hub só é consultado depois que o trecho de ônibus até o hub
+trouxe resultado. Assim, não se paga por uma rota híbrida que não se forma.
+
+### Régua aérea (ANAC)
+
+O Termômetro de Preço classifica voos com as **tarifas domésticas efetivamente vendidas**,
+publicadas pela ANAC desde 2002 (Resolução ANAC nº 437/2017). Os microdados vêm de
+`sas.anac.gov.br/sas/tarifadomestica/`, com cerca de um mês de defasagem.
+
+```bash
+# Ver os meses publicados
+python scripts/import_anac_fares.py --list
+
+# Importar os 12 meses mais recentes (janela usada pelo Termômetro)
+python scripts/import_anac_fares.py --months 12
+```
+
+Cada rota é aeroporto a aeroporto (ex.: `SBSP→SBRJ`), com a média ponderada e os percentis
+P10 a P90 ponderados por assento, guardados por mês de venda. A régua combina os 12 meses mais
+recentes e exige pelo menos **3 meses** e **300 assentos** na janela.
+
+Os microdados não separam compras com muita e com pouca antecedência, e o mês é o da venda,
+não o do voo. Por isso, a régua mostra se a tarifa é cara ou barata para a rota, mas não prevê
+o preço de uma data específica.
+
+> A régua compara só a **tarifa base**, porque o valor da ANAC não inclui taxa de embarque nem
+> bagagem. O Termômetro ignora taxas e franquias ao classificar uma cotação aérea.
 
 ### Tarifas históricas reais (ANTT / Monitriip)
 
@@ -187,8 +265,14 @@ trivio/
 │   ├── collectors/             # Coletores de Provedores Modais
 │   │   ├── base.py             # Classe abstrata, retries e modelo StandardizedQuote
 │   │   ├── compliance.py       # robots.txt, User-Agent identificado, ritmo e recusas
-│   │   ├── air/ignav.py        # Coletor aéreo ao vivo (Ignav)
+│   │   ├── air/
+│   │   │   ├── ignav.py        # Coletor aéreo ao vivo (Ignav): cliente HTTP e parser
+│   │   │   ├── carriers.py     # Nomes canônicos das companhias (LATAM, GOL, Azul...)
+│   │   │   └── boarding_fees.py# Taxa de embarque estimada por aeroporto de origem
 │   │   ├── anac/               # Microdados de tarifas aéreas da ANAC (régua)
+│   │   │   ├── portal.py       # Descoberta e download na listagem da ANAC
+│   │   │   ├── airfares.py     # Leitura e agregação por rota e mês (percentis ponderados)
+│   │   │   └── airports.py     # De-para IATA <-> ICAO dos aeroportos
 │   │   ├── antt/               # Dados abertos da ANTT (Monitriip)
 │   │   │   ├── portal.py       # Descoberta e download pelos caminhos permitidos
 │   │   │   └── monitriip.py    # Detecção de esquema e agregação de tarifas
@@ -199,10 +283,11 @@ trivio/
 │   │   ├── catchment.py        # Identificação de aeroportos/rodoviárias vizinhas
 │   │   └── entity_resolver.py  # Normalização de códigos IATA, ANTT e Nomes
 │   ├── services/               # Orquestração do Pipeline de Dados
+│   │   ├── air_quotes.py       # Aéreo ao vivo: cache de consultas, orçamento e coalescência
 │   │   └── quote_pipeline.py   # Resolução canônica, transfer urbano, dedup e persistência
 │   ├── config.py               # Configurações centralizadas Pydantic Settings
-│   ├── database.py             # Sessões assíncronas do SQLAlchemy 2.0
-│   └── models.py               # Modelos relacionais (Hub, Terminal, FareQuote)
+│   ├── database.py             # Sessões do SQLAlchemy 2.0 e migração leve de colunas
+│   └── models.py               # Modelos relacionais (Hub, Terminal, FareQuote, RouteMonthlyFare, ProviderQuery)
 ├── frontend/                   # Aplicação Web Next.js 14
 │   ├── src/
 │   │   ├── app/                # App Router (page.tsx, layout.tsx, globals.css)
@@ -213,9 +298,11 @@ trivio/
 ├── scripts/                    # Scripts utilitários e de verificação
 │   ├── init_db.py              # Inicialização e carga inicial dos Hubs brasileiros
 │   ├── import_antt_fares.py    # Importa tarifas históricas reais da ANTT (Monitriip)
+│   ├── import_anac_fares.py    # Importa tarifas aéreas domésticas vendidas (régua da ANAC)
 │   ├── test_collector.py       # CLI Runner interativo com saída rica no terminal
 │   └── capture_preview.py      # Automação Playwright do frontend próprio (preview visual)
-├── tests/                      # Suíte completa de testes automatizados (106 testes)
+├── tests/                      # Suíte completa de testes automatizados (223 testes)
+│   ├── fixtures/               # Resposta real do Ignav, com identificadores fictícios
 ├── .env.example                # Template de configuração de variáveis de ambiente
 ├── .gitignore                  # Regras de exclusão para Git
 ├── requirements.txt            # Dependências Python travadas
@@ -262,21 +349,24 @@ trivio/
    ```
    No `.env`, vale preencher:
    - `IGNAV_API_KEY` — chave da [Ignav Flight Prices API](https://ignav.com). **Sem ela o aéreo ao vivo
-     fica desligado** e o frontend recebe `PROVIDER_ERROR` com `reason: "not_configured"`.
-     Cada busca nova custa uma request (1.000 grátis uma única vez; depois US$ 2 a cada 1.000).
-     `AIR_MONTHLY_REQUEST_BUDGET` (padrão 800) limita o gasto do mês; buscas repetidas saem do cache
-     (`provider_queries`) sem custo. Consumo do mês: `GET /api/v1/air/usage`.
-   - `AIR_PERSIST_LIVE_QUOTES` — desligado por padrão: as cotações ao vivo não entram no histórico
-     permanente até você confirmar que os termos do provedor permitem.
-   - Régua do aéreo: `python scripts/import_anac_fares.py --months 12` (tarifas reais vendidas, ANAC).
+     fica desligado** (`reason: "not_configured"`). Ver *Preços aéreos ao vivo*.
+   - `AIR_MONTHLY_REQUEST_BUDGET` — teto de requests pagas por mês (padrão 800; `0` desliga o aéreo ao vivo).
+   - `AIR_LIVE_CACHE_MAX_SECONDS` — validade máxima do cache de consultas aéreas (padrão 7200).
+   - `AIR_PERSIST_LIVE_QUOTES` — `false` por padrão: cotações ao vivo não entram no histórico permanente.
+   - `DEFAULT_DOMESTIC_BOARDING_FEE_BRL` — taxa de embarque estimada para separar tarifa e taxa (padrão 40).
+   - `PUBLIC_API_BASE_URL` — endereço público da API, usado nos links de compra (padrão `http://localhost:8000`).
    - `BOT_INFO_URL` / `BOT_CONTACT_EMAIL` — identificam o robô do Trivio no `User-Agent`
      e dão aos sites um canal de contato. Veja *Política de Coleta de Dados* acima.
    - `DATABASE_URL` — troque para PostgreSQL em produção.
+
+   O `.env.example` traz todas as variáveis com os valores padrão.
 
 5. Inicialize o banco de dados e faça a carga dos hubs nacionais (SP, Rio, Curitiba, etc.):
    ```bash
    python scripts/init_db.py
    ```
+   Os testes de WebSocket precisam desses hubs cadastrados. Para ter a régua aérea completa,
+   rode também `python scripts/import_anac_fares.py --months 12`.
 
 6. Inicie o servidor FastAPI:
    ```bash
@@ -316,7 +406,7 @@ O projeto conta com cobertura de testes unitários e de integração cobrindo co
 ```bash
 pytest tests/ -v
 ```
-*(Todos os 106 testes devem passar com 100% de sucesso)*
+*(Todos os 223 testes devem passar com 100% de sucesso, após `python scripts/init_db.py`)*
 
 ### Verificação e Build do Frontend
 ```bash
