@@ -144,3 +144,92 @@ def test_websocket_provider_error_isolation(mock_air, mock_road, client):
         completed = ws.receive_json()
         assert completed["event"] == "SEARCH_COMPLETED"
         assert completed["total_quotes"] == 1
+
+
+@patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
+@patch("app.collectors.air.amadeus.AmadeusCollector.safe_fetch")
+def test_websocket_simulation_mode_is_labeled_and_not_persisted(mock_air, mock_road, client):
+    """Sem dados reais: estimativas rotuladas, sem operadoras reais, com transfer e sem persistência.
+
+    Também valida que o Virtual Interlining usa pernas Origem -> Hub e Hub -> Destino
+    (Rio Grande -> ônibus -> Pelotas -> voo -> São Paulo).
+    """
+    from app.database import SessionLocal
+    from app.models import FareQuote, Hub
+
+    db = SessionLocal()
+    try:
+        if not db.query(Hub).filter(Hub.ibge_code.in_(["4315602", "4314407", "3550308"])).count() == 3:
+            pytest.skip("Seed de hubs (scripts/init_db.py) ausente no banco de desenvolvimento.")
+        rows_before = db.query(FareQuote).count()
+    finally:
+        db.close()
+
+    mock_road.return_value = []
+    mock_air.return_value = []
+
+    events = []
+    with client.websocket_connect("/ws/search") as ws:
+        ws.send_text(json.dumps({
+            "action": "start_search",
+            "origin": "RIG",
+            "destination": "SAO",
+            "date": "2026-11-20",
+        }))
+        while True:
+            event = ws.receive_json()
+            events.append(event)
+            if event["event"] == "SEARCH_COMPLETED":
+                break
+
+    quotes = [q for e in events if e["event"] == "QUOTE_BATCH" for q in e["quotes"]]
+    assert quotes, "o modo simulação deve retornar estimativas"
+    for q in quotes:
+        assert q["route_metadata"]["is_simulated"] is True
+        assert q["provider_source"] in ("trivio_simulation", "trivio_interliner")
+        assert "estimativa" in q["carrier_name"]
+        assert q["transfer_cost_estimate"] > 0
+
+    interline = [q for q in quotes if q["route_metadata"].get("is_virtual_interline")]
+    assert interline, "deve haver conexão ônibus + voo via hub vizinho"
+    for q in interline:
+        assert q["route_metadata"]["intermodal_hub"] == "Pelotas, RS"
+        transfer = q["route_metadata"]["transfer_details"]
+        assert "Pelotas" in transfer["from_terminal_name"]
+        assert "Pelotas" in transfer["to_terminal_name"]
+
+    assert events[-1]["is_simulated"] is True
+
+    db = SessionLocal()
+    try:
+        assert db.query(FareQuote).count() == rows_before
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "origin,destination,date,expected",
+    [
+        ("", "RIO", "2026-11-20", "Informe a origem"),
+        ("SAO", "XYZW-INEXISTENTE", "2026-11-20", "Destino não reconhecido"),
+        ("SAO", "RIO", "20/11/2026", "Data de ida inválida"),
+        ("SAO", "CGH", "2026-11-20", "cidades diferentes"),
+    ],
+)
+@patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
+@patch("app.collectors.air.amadeus.AmadeusCollector.safe_fetch")
+def test_websocket_rejects_invalid_search_params(mock_air, mock_road, client, origin, destination, date, expected):
+    """Busca inválida emite SEARCH_ERROR e não chama coletores nem gera estimativas."""
+    with client.websocket_connect("/ws/search") as ws:
+        ws.send_text(json.dumps({
+            "action": "start_search",
+            "origin": origin,
+            "destination": destination,
+            "date": date,
+        }))
+        event = ws.receive_json()
+
+    assert event["event"] == "SEARCH_ERROR"
+    assert expected in event["message"]
+    mock_road.assert_not_called()
+    mock_air.assert_not_called()

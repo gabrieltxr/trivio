@@ -5,13 +5,13 @@ import {
   Search,
   ArrowRightLeft,
   Calendar,
-  MapPin,
   Clock,
   SlidersHorizontal,
   Sparkles,
   Compass,
 } from "lucide-react";
 import { SearchParams, TripType } from "@/types";
+import LocationAutocomplete from "@/components/LocationAutocomplete";
 
 interface SearchBarProps {
   onSearch: (params: SearchParams) => void;
@@ -47,6 +47,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
   const [includeBaggage, setIncludeBaggage] = useState(false);
   const [enableInterlining, setEnableInterlining] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const handleSwap = () => {
     const temp = origin;
@@ -56,6 +57,15 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!origin.trim() || !destination.trim()) {
+      setFormError("Selecione a origem e o destino na lista de sugestões.");
+      return;
+    }
+    if (origin.trim().toUpperCase() === destination.trim().toUpperCase()) {
+      setFormError("A origem e o destino precisam ser diferentes.");
+      return;
+    }
+    setFormError(null);
     onSearch({
       origin,
       destination,
@@ -133,18 +143,14 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
             
-            {/* Campo Origem (col-span-3) */}
-            <div className="lg:col-span-3 bg-slate-50 hover:bg-white focus-within:bg-white border border-slate-200/90 hover:border-slate-300 focus-within:border-cyan-500 focus-within:ring-2 focus-within:ring-cyan-500/20 rounded-2xl p-3 transition-all">
-              <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1 flex items-center gap-1.5">
-                <MapPin className="w-3.5 h-3.5 text-cyan-600" />
-                Origem (Hub ou Aeroporto)
-              </label>
-              <input
-                type="text"
+            {/* Campo Origem com Autocomplete (col-span-3) */}
+            <div className="lg:col-span-3">
+              <LocationAutocomplete
+                label="Origem (Hub, Cidade ou Aeroporto)"
                 value={origin}
-                onChange={(e) => setOrigin(e.target.value.toUpperCase())}
-                placeholder="Ex: SAO, CGH, TIETE"
-                className="w-full bg-transparent text-slate-900 font-bold text-base focus:outline-none placeholder:text-slate-400"
+                onChange={(code) => setOrigin(code)}
+                placeholder="Ex: São Paulo, Congonhas, CGH..."
+                theme="cyan"
                 required
               />
             </div>
@@ -161,18 +167,14 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
               </button>
             </div>
 
-            {/* Campo Destino (col-span-3) */}
-            <div className="lg:col-span-3 bg-slate-50 hover:bg-white focus-within:bg-white border border-slate-200/90 hover:border-slate-300 focus-within:border-orange-500 focus-within:ring-2 focus-within:ring-orange-500/20 rounded-2xl p-3 transition-all">
-              <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1 flex items-center gap-1.5">
-                <MapPin className="w-3.5 h-3.5 text-orange-500" />
-                Destino (Hub ou Aeroporto)
-              </label>
-              <input
-                type="text"
+            {/* Campo Destino com Autocomplete (col-span-3) */}
+            <div className="lg:col-span-3">
+              <LocationAutocomplete
+                label="Destino (Hub, Cidade ou Aeroporto)"
                 value={destination}
-                onChange={(e) => setDestination(e.target.value.toUpperCase())}
-                placeholder="Ex: RIO, SDU, NOVO_RIO"
-                className="w-full bg-transparent text-slate-900 font-bold text-base focus:outline-none placeholder:text-slate-400"
+                onChange={(code) => setDestination(code)}
+                placeholder="Ex: Rio de Janeiro, Santos Dumont, SDU..."
+                theme="orange"
                 required
               />
             </div>
@@ -341,6 +343,12 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
               </div>
 
             </div>
+          )}
+
+          {formError && (
+            <p role="alert" className="text-xs font-semibold text-red-700">
+              {formError}
+            </p>
           )}
         </form>
       </div>

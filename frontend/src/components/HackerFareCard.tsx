@@ -150,17 +150,23 @@ export default function HackerFareCard({ combination }: HackerFareCardProps) {
               </span>
             </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                const urlOut = outbound.route_metadata?.booking_url as string;
-                if (urlOut) window.open(urlOut, "_blank");
-              }}
-              className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 active:scale-95 text-white font-black px-5 py-3 rounded-xl text-sm shadow-md shadow-orange-500/25 transition-all flex items-center gap-2"
-            >
-              <span>Reservar Hacker Fare</span>
-              <ExternalLink className="w-4 h-4 stroke-[2.5]" />
-            </button>
+            {outbound.route_metadata?.is_simulated || inbound.route_metadata?.is_simulated ? (
+              <span className="px-5 py-3 rounded-xl text-sm font-bold text-slate-500 bg-slate-100 border border-slate-200">
+                Estimativa simulada
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  const urlOut = outbound.route_metadata?.booking_url;
+                  if (urlOut) window.open(urlOut, "_blank");
+                }}
+                className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 active:scale-95 text-white font-black px-5 py-3 rounded-xl text-sm shadow-md shadow-orange-500/25 transition-all flex items-center gap-2"
+              >
+                <span>Reservar Hacker Fare</span>
+                <ExternalLink className="w-4 h-4 stroke-[2.5]" />
+              </button>
+            )}
           </div>
         </div>
 

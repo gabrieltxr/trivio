@@ -1,12 +1,30 @@
 """Coletor Rodoviário para ClickBus (Trivio Core).
 
-Estratégia de Duas Camadas:
-- Tier 1 (Primário): Engenharia Reversa com HTTPX assíncrono consumindo diretamente
-  as APIs internas de busca (JSON/XHR), com rotação de headers e sessão.
-- Tier 2 (Fallback): Navegador Headless (Playwright) para contornar proteções
-  WAF/Azion/Cloudflare quando o Tier 1 receber HTTP 403 / CollectorBlockedError.
+ACESSO EM CONFORMIDADE
+----------------------
+Este coletor acessa a ClickBus como um robô identificado e obediente:
+
+- O User-Agent declara o Trivio e oferece contato (nunca imitamos um navegador).
+- Toda URL passa pela verificação do robots.txt antes da requisição.
+- Respeitamos o Crawl-delay e o cabeçalho Retry-After.
+- HTTP 401/403 é tratado como negativa definitiva: sem retentativa e sem
+  navegador headless. Contornar a recusa seria evasão de detecção de bot.
+
+Situação atual (verificada em 07/11/2026)
+-----------------------------------------
+O `robots.txt` da ClickBus permite `/onibus/<origem>/<destino>`, mas PROÍBE
+qualquer URL com `?departureDate=` (`Disallow: /*?departureDate=`), que é
+justamente a página de resultados de busca. Além disso, o WAF (Azion) responde
+HTTP 403 às requisições automatizadas ao endpoint interno `/api/v4/trips`.
+
+Conclusão: hoje a ClickBus NÃO autoriza coleta automatizada de tarifas. O
+caminho correto é comercial. A ClickBus mantém uma API B2B usada por parceiros
+(ex: Envision Tecnologia, VaideBus); o acesso se solicita ao time de parcerias.
+Enquanto não houver autorização, o coletor registra a negativa e devolve lista
+vazia, e o Trivio exibe estimativas claramente rotuladas como simulação.
 """
 
+import asyncio
 from datetime import datetime, timezone
 import json
 import logging
@@ -17,15 +35,22 @@ import httpx
 
 from app.collectors.base import (
     BaseCollector,
-    CollectorBlockedError,
-    CollectorError,
     CollectorNetworkError,
     CollectorParsingError,
     CollectorRateLimitError,
     CollectorTimeoutError,
     StandardizedQuote,
     collector_retry,
-    get_default_async_client,
+)
+from app.collectors.road.taxonomy import (
+    SERVICE_CLASS_MAPPING as _SERVICE_CLASS_MAPPING,
+    normalize_bus_service_class,
+)
+from app.collectors.compliance import (
+    CompliantHTTPClient,
+    NotAuthorizedError,
+    RobotsDisallowedError,
+    parse_retry_after,
 )
 
 logger = logging.getLogger("trivio.collectors.clickbus")
@@ -35,32 +60,10 @@ logger = logging.getLogger("trivio.collectors.clickbus")
 # 1. Normalização de Classes de Serviço Rodoviário (Resoluções ANTT)
 # ==============================================================================
 
-SERVICE_CLASS_MAPPING = {
-    "convencional": "CONVENCIONAL",
-    "convencional com ar": "CONVENCIONAL",
-    "executivo": "EXECUTIVO",
-    "semi leito": "SEMI_LEITO",
-    "semi-leito": "SEMI_LEITO",
-    "semileito": "SEMI_LEITO",
-    "leito": "LEITO",
-    "leito turismo": "LEITO",
-    "leito cama": "LEITO_CAMA",
-    "leito-cama": "LEITO_CAMA",
-    "cama": "LEITO_CAMA",
-    "prime": "LEITO_CAMA",
-}
-
-
-def normalize_bus_service_class(raw_service: str) -> str:
-    """Normaliza nomes comerciais de classes de ônibus para a taxonomia Trivio."""
-    if not raw_service:
-        return "CONVENCIONAL"
-    cleaned = raw_service.strip().lower()
-    # Ordena chaves por tamanho decrescente para dar prioridade a termos mais específicos (ex: 'leito cama' antes de 'leito')
-    for key in sorted(SERVICE_CLASS_MAPPING.keys(), key=len, reverse=True):
-        if key in cleaned:
-            return SERVICE_CLASS_MAPPING[key]
-    return cleaned.upper().replace(" ", "_")
+# A taxonomia de classes vive em app/collectors/road/taxonomy.py para ser
+# compartilhada com os demais coletores rodoviários (ex: ANTT).
+# Reexportado aqui por compatibilidade com imports existentes.
+SERVICE_CLASS_MAPPING = _SERVICE_CLASS_MAPPING
 
 
 # ==============================================================================
@@ -233,61 +236,102 @@ def parse_clickbus_trips(
 # 3. Coletor Principal ClickBus
 # ==============================================================================
 
+CLICKBUS_SLUG_MAP = {
+    "SAO": "sao-paulo-sp",
+    "CGH": "sao-paulo-sp",
+    "GRU": "sao-paulo-sp",
+    "TIETE": "sao-paulo-tiete-sp",
+    "BARRA_FUNDA": "sao-paulo-barra-funda-sp",
+    "RIO": "rio-de-janeiro-rj",
+    "SDU": "rio-de-janeiro-rj",
+    "GIG": "rio-de-janeiro-rj",
+    "NOVO_RIO": "rio-de-janeiro-novo-rio-rj",
+    "CWB": "curitiba-pr",
+    "RODO_CWB": "curitiba-pr",
+    "POA": "porto-alegre-rs",
+    "ROD_POA": "porto-alegre-rs",
+    "VCP": "campinas-sp",
+    "ROD_CAMPINAS": "campinas-sp",
+    "PET": "pelotas-rs",
+    "ROD_PELOTAS": "pelotas-rs",
+    "RIG": "rio-grande-rs",
+    "ROD_RIO_GRANDE": "rio-grande-rs",
+    "BHZ": "belo-horizonte-mg",
+    "CNF": "belo-horizonte-mg",
+    "ROD_BH": "belo-horizonte-mg",
+    "BSB": "brasilia-df",
+    "ROD_BSB": "brasilia-df",
+    "FLN": "florianopolis-sc",
+    "ROD_FLN": "florianopolis-sc",
+    "SSA": "salvador-ba",
+    "FOR": "fortaleza-ce",
+    "REC": "recife-pe",
+}
+
+
 class ClickBusCollector(BaseCollector):
     """Coletor assíncrono para o ecossistema ClickBus."""
 
     provider_name = "clickbus"
     modal = "ROAD"
-    supports_headless_fallback = True
 
     def __init__(
         self,
         base_api_url: str = "https://www.clickbus.com.br/api/v4",
         timeout_seconds: float = 12.0,
+        api_token: Optional[str] = None,
     ):
         self.base_api_url = base_api_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        # Credencial da API de parceiros, quando houver autorização formal.
+        self.api_token = api_token
 
     @collector_retry(max_attempts=3, min_wait=1.0, max_wait=5.0)
     async def fetch_quotes(
         self, origin_ext_id: str, dest_ext_id: str, travel_date: str
     ) -> List[StandardizedQuote]:
-        """Tier 1: Requisição assíncrona HTTPX contra as APIs JSON da ClickBus."""
-        client_headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Origin": "https://www.clickbus.com.br",
-            "Referer": f"https://www.clickbus.com.br/onibus/{origin_ext_id}/{dest_ext_id}",
-        }
+        """Consulta viagens na ClickBus respeitando robots.txt, ritmo e recusas.
+
+        Levanta NotAuthorizedError se o site recusar (401/403) e RobotsDisallowedError
+        se o robots.txt proibir a URL. Em ambos os casos o `safe_fetch` encerra a
+        coleta sem contorno.
+        """
+        orig_slug = CLICKBUS_SLUG_MAP.get(origin_ext_id.upper(), origin_ext_id.lower())
+        dest_slug = CLICKBUS_SLUG_MAP.get(dest_ext_id.upper(), dest_ext_id.lower())
+
+        client_headers = {"Accept": "application/json"}
+        if self.api_token:
+            client_headers["Authorization"] = f"Bearer {self.api_token}"
 
         search_url = f"{self.base_api_url}/trips"
         params = {
-            "from": origin_ext_id,
-            "to": dest_ext_id,
+            "from": orig_slug,
+            "to": dest_slug,
             "departure": travel_date,
         }
 
         try:
-            async with get_default_async_client(
+            async with CompliantHTTPClient(
                 timeout=self.timeout_seconds, headers=client_headers
             ) as client:
+                # O cliente verifica o robots.txt, aplica o Crawl-delay e converte
+                # 401/403 em NotAuthorizedError antes de chegar aqui.
                 response = await client.get(search_url, params=params)
 
-                # Detecção de bloqueios anti-bot (Azion / Cloudflare)
-                if response.status_code == 403:
-                    raise CollectorBlockedError(
-                        f"Bloqueio WAF/Azion na ClickBus (HTTP 403) para rota {origin_ext_id}->{dest_ext_id}"
-                    )
-
                 if response.status_code == 429:
+                    retry_after = parse_retry_after(response.headers.get("Retry-After"))
+                    suffix = f" Retry-After: {retry_after:.0f}s." if retry_after else ""
+                    if retry_after:
+                        await asyncio.sleep(min(retry_after, 60.0))
                     raise CollectorRateLimitError(
-                        f"Rate limit atingido na ClickBus (HTTP 429)"
+                        f"A ClickBus pediu para reduzir o ritmo (HTTP 429).{suffix}"
                     )
 
                 if response.status_code >= 500:
                     response.raise_for_status()
 
                 if response.status_code == 404:
-                    logger.info(f"Nenhuma rota encontrada na ClickBus: {origin_ext_id} -> {dest_ext_id}")
+                    logger.info(f"Nenhuma rota encontrada na ClickBus: {orig_slug} -> {dest_slug}")
                     return []
 
                 response.raise_for_status()
@@ -295,58 +339,8 @@ class ClickBusCollector(BaseCollector):
                 return parse_clickbus_trips(data, origin_ext_id, dest_ext_id)
 
         except (httpx.ConnectTimeout, httpx.ReadTimeout):
-            raise CollectorTimeoutError(f"Timeout ao consultar ClickBus para {origin_ext_id}->{dest_ext_id}")
+            raise CollectorTimeoutError(f"Timeout ao consultar ClickBus para {orig_slug}->{dest_slug}")
         except httpx.NetworkError as net_err:
             raise CollectorNetworkError(f"Erro de conexão com ClickBus: {net_err}")
         except json.JSONDecodeError as json_err:
             raise CollectorParsingError(f"Resposta JSON inválida da ClickBus: {json_err}")
-
-    async def fallback_fetch_quotes(
-        self, origin_ext_id: str, dest_ext_id: str, travel_date: str
-    ) -> List[StandardizedQuote]:
-        """Tier 2: Contingência com Playwright em caso de bloqueio anti-bot severo no Tier 1."""
-        logger.info(
-            f"[clickbus-headless] Iniciando fallback Playwright para {origin_ext_id} -> {dest_ext_id} em {travel_date}"
-        )
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError:
-            logger.error("[clickbus-headless] Playwright não está instalado. Não é possível rodar o Tier 2.")
-            return []
-
-        search_url = (
-            f"https://www.clickbus.com.br/onibus/{origin_ext_id}/{dest_ext_id}?departureDate={travel_date}"
-        )
-        intercepted_quotes: List[StandardizedQuote] = []
-
-        try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                context = await browser.new_context(
-                    user_agent=DEFAULT_HEADERS.get("User-Agent"),
-                    locale="pt-BR",
-                    viewport={"width": 1280, "height": 800},
-                )
-                page = await context.new_page()
-
-                # Intercepta respostas XHR de viagens
-                async def handle_response(response):
-                    if "trips" in response.url and response.status == 200:
-                        try:
-                            json_data = await response.json()
-                            parsed = parse_clickbus_trips(json_data, origin_ext_id, dest_ext_id)
-                            intercepted_quotes.extend(parsed)
-                        except Exception:
-                            pass
-
-                page.on("response", handle_response)
-
-                await page.goto(search_url, wait_until="networkidle", timeout=20000)
-                await browser.close()
-
-            logger.info(f"[clickbus-headless] Sucesso: {len(intercepted_quotes)} cotações interceptadas via Playwright.")
-            return intercepted_quotes
-
-        except Exception as pw_err:
-            logger.error(f"[clickbus-headless] Falha na execução do Playwright: {pw_err}")
-            return []

@@ -223,3 +223,36 @@ def test_get_cached_quotes(client):
     res_road = client.get("/api/v1/quotes/cached?origin_terminal_id=10&destination_terminal_id=20&modal=ROAD")
     assert res_road.status_code == 200
     assert res_road.json()["total_quotes"] == 0
+
+
+def test_autocomplete_locations(client):
+    """Valida endpoint de autocomplete unificado para hubs, aeroportos e rodoviárias."""
+    # 1. Busca por cidade / hub
+    res_sp = client.get("/api/v1/locations/autocomplete?query=sao")
+    assert res_sp.status_code == 200
+    data_sp = res_sp.json()
+    assert len(data_sp) >= 1
+    titles = [item["title"] for item in data_sp]
+    assert any("São Paulo" in t for t in titles)
+
+    # 2. Busca por código IATA de aeroporto
+    res_cgh = client.get("/api/v1/locations/autocomplete?query=CGH")
+    assert res_cgh.status_code == 200
+    data_cgh = res_cgh.json()
+    assert len(data_cgh) >= 1
+    assert data_cgh[0]["code"] == "CGH"
+    assert data_cgh[0]["type"] == "airport"
+
+    # 3. Busca por rodoviária
+    res_tiete = client.get("/api/v1/locations/autocomplete?query=tiete")
+    assert res_tiete.status_code == 200
+    data_tiete = res_tiete.json()
+    assert len(data_tiete) >= 1
+    assert data_tiete[0]["code"] == "TIETE"
+    assert data_tiete[0]["type"] == "bus_station"
+
+    # 4. Busca sem query (retorna destaques/populares)
+    res_empty = client.get("/api/v1/locations/autocomplete")
+    assert res_empty.status_code == 200
+    assert len(res_empty.json()) >= 1
+

@@ -6,9 +6,12 @@ Responsável por:
    provedor responde, sem bloquear a interface esperando o mais lento ("pipocamento" de cards).
 3. Resiliência por isolamento (Bulkhead): se um provedor falhar ou sofrer timeout, emite
    PROVIDER_ERROR sem interromper os demais.
-4. Geração em tempo real de combinações Hacker Fares (quando há data de volta informada).
-5. Consolidação e persistência automática no cache com TTL dinâmico ao finalizar.
-6. Cancelamento gracioso de tarefas pendentes em caso de desconexão do cliente.
+4. Virtual Interlining real: busca as pernas Origem -> Hub (ônibus) e Hub -> Destino (voo)
+   para hubs com aeroporto dentro do raio geodésico da origem.
+5. Geração em tempo real de combinações Hacker Fares (quando há data de volta informada).
+6. Consolidação e persistência automática no cache com TTL dinâmico ao finalizar
+   (apenas preços reais de mercado; simulações e rotas sintetizadas nunca são gravadas).
+7. Cancelamento gracioso de tarefas pendentes em caso de desconexão do cliente.
 """
 
 import asyncio
@@ -16,140 +19,281 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from geopy.distance import geodesic
 from sqlalchemy.orm import Session
 
-from app.analyzers.interliner import build_virtual_interline_routes
+from app.analyzers.interliner import VirtualInterlineRoute, build_virtual_interline_routes
 from app.analyzers.price_thermometer import enrich_quotes_batch_with_thermometer
 from app.analyzers.route_evaluator import enrich_quote_with_evaluation
 from app.analyzers.trivio_scorer import generate_hacker_fares, score_and_rank_quotes
 from app.cache.deduplicator import deduplicate_quotes
 from app.collectors.air.amadeus import AmadeusCollector
 from app.collectors.base import StandardizedQuote
-from app.collectors.road.clickbus import ClickBusCollector
+from app.collectors.road.clickbus import ClickBusCollector, CLICKBUS_SLUG_MAP
+from app.config import settings
 from app.database import SessionLocal
-from app.services.quote_pipeline import process_and_persist_quotes
+from app.geo.catchment import CatchmentFinder
+from app.geo.entity_resolver import EntityResolver
+from app.models import Hub, Terminal, ModalType, ProviderMapping
+from app.services.quote_pipeline import QuotePipeline, process_and_persist_quotes
 
 logger = logging.getLogger("trivio.api.websocket")
 
 router = APIRouter(tags=["Real-Time Streaming"])
 
+# Identificador do provedor de cotações simuladas (estimativas sem preço real de mercado)
+SIMULATION_PROVIDER = "trivio_simulation"
+SIMULATION_NOTICE = (
+    "Estimativa simulada pelo Trivio a partir da distância geodésica: não é uma tarifa "
+    "real de mercado nem está disponível para compra."
+)
+MAX_INTERLINE_HUBS = 2
+
 
 # ==============================================================================
-# 1. Estruturas de Tarefas e Coleta Concorrente
+# 1. Resolução de Localidades
 # ==============================================================================
 
-def get_corridor_quotes(origin: str, dest: str, date_str: str) -> List[StandardizedQuote]:
-    """Gera cotações realistas para corredores nacionais quando APIs externas estão bloqueadas por WAF ou sem credenciais."""
+def _resolve_hub_and_terminals(query_str: str, db: Session, resolver: EntityResolver):
+    """Resolve uma string (código IATA, nome da cidade ou terminal) para seu Hub e respectivos terminais."""
+    clean = (query_str or "").strip()
+    if not clean:
+        return None, None, None
+    res = resolver.resolve_any(clean)
+    if not res:
+        return None, None, None
+    if res.entity_type == "TERMINAL":
+        term = db.query(Terminal).filter(Terminal.id == res.id).first()
+        if not term:
+            return None, None, None
+        hub = term.hub
+        road_term = term if term.modal == ModalType.ROAD else next((t for t in hub.terminals if t.modal == ModalType.ROAD), None)
+        air_term = term if term.modal == ModalType.AIR else next((t for t in hub.terminals if t.modal == ModalType.AIR), None)
+    else:
+        hub = db.query(Hub).filter(Hub.id == res.id).first()
+        if not hub:
+            return None, None, None
+        road_term = next((t for t in hub.terminals if t.modal == ModalType.ROAD), None)
+        air_term = next((t for t in hub.terminals if t.modal == ModalType.AIR), None)
+    return hub, road_term, air_term
+
+
+def _clickbus_external_id(db: Session, road_term: Optional[Terminal], fallback_query: str) -> str:
+    """Obtém o slug da ClickBus via ProviderMapping, com fallback para o mapa estático."""
+    if road_term:
+        mapping = db.query(ProviderMapping).filter(
+            ProviderMapping.terminal_id == road_term.id,
+            ProviderMapping.provider_name == "clickbus",
+        ).first()
+        if mapping:
+            return mapping.external_id
+        if road_term.official_code:
+            return CLICKBUS_SLUG_MAP.get(road_term.official_code.upper(), road_term.official_code.lower())
+    return CLICKBUS_SLUG_MAP.get(fallback_query.upper(), fallback_query.lower())
+
+
+def _find_interline_hubs(
+    orig_hub: Optional[Hub],
+    dest_hub: Optional[Hub],
+    db: Session,
+    radius_km: float,
+    max_hubs: int = MAX_INTERLINE_HUBS,
+) -> List[Tuple[Hub, Terminal, Terminal]]:
+    """Seleciona hubs intermediários (com rodoviária e aeroporto) no raio geodésico da origem.
+
+    O padrão de Virtual Interlining modelado é: Ônibus (Origem -> Hub) + Voo (Hub -> Destino).
+    """
+    if not orig_hub:
+        return []
+
+    excluded = {orig_hub.id}
+    if dest_hub:
+        excluded.add(dest_hub.id)
+
+    finder = CatchmentFinder(db)
+    nearby_airports = finder.find_terminals_for_hub(
+        hub_id=orig_hub.id,
+        max_radius_km=radius_km,
+        modal_filter=ModalType.AIR,
+    )
+
+    selected: List[Tuple[Hub, Terminal, Terminal]] = []
+    seen_hubs = set()
+    for candidate in nearby_airports:  # já ordenado por distância
+        if candidate.hub_id in excluded or candidate.hub_id in seen_hubs:
+            continue
+        hub = db.query(Hub).filter(Hub.id == candidate.hub_id).first()
+        if not hub:
+            continue
+        road_term = next((t for t in hub.terminals if t.modal == ModalType.ROAD), None)
+        air_term = next((t for t in hub.terminals if t.id == candidate.terminal_id), None)
+        if not road_term or not air_term:
+            continue
+        seen_hubs.add(hub.id)
+        selected.append((hub, road_term, air_term))
+        if len(selected) >= max_hubs:
+            break
+    return selected
+
+
+# ==============================================================================
+# 2. Cotações Simuladas (Modo Demonstração)
+# ==============================================================================
+
+def get_corridor_quotes(
+    origin: str,
+    dest: str,
+    date_str: str,
+    db: Optional[Session] = None,
+) -> List[StandardizedQuote]:
+    """Gera cotações SIMULADAS a partir da distância geodésica entre os hubs.
+
+    Usadas apenas quando nenhum coletor real retorna dados (WAF ou credenciais ausentes).
+    Todas são marcadas com provider_source='trivio_simulation' e route_metadata['is_simulated']=True,
+    usam operadoras genéricas (nunca nomes de empresas reais) e não são persistidas no banco.
+    """
+    own_session = False
+    if db is None:
+        db = SessionLocal()
+        own_session = True
+
     try:
-        dep_base = datetime.strptime(date_str, "%Y-%m-%d")
-    except Exception:
-        dep_base = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=7)
+        try:
+            dep_base = datetime.strptime(date_str, "%Y-%m-%d")
+        except Exception:
+            dep_base = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=7)
 
-    orig_clean = origin.upper()
-    dest_clean = dest.upper()
+        resolver = EntityResolver(db)
+        orig_hub, orig_road_term, orig_air_term = _resolve_hub_and_terminals(origin, db, resolver)
+        dest_hub, dest_road_term, dest_air_term = _resolve_hub_and_terminals(dest, db, resolver)
 
-    return [
-        # 1. Ônibus Leito Cama Noturno (Excelente conforto, sono produtivo)
-        StandardizedQuote(
-            origin_external_id=f"{orig_clean}-TIETE",
-            destination_external_id=f"{dest_clean}-NOVO-RIO",
-            modal="ROAD",
-            provider_source="clickbus",
-            carrier_name="Auto Viação 1001",
-            service_class="LEITO_CAMA",
-            departure_time=dep_base.replace(hour=23, minute=30),
-            arrival_time=dep_base.replace(hour=23, minute=30) + timedelta(hours=6, minutes=30),
-            duration_minutes=390,
-            door_to_door_duration_minutes=430,
-            base_price=239.90,
-            taxes_price=0.0,
-            baggage_fee_estimate=0.0,
-            transfer_cost_estimate=25.0,
-            route_metadata={
-                "is_direct": True,
-                "stops_count": 0,
-                "amenities": ["wi-fi", "poltrona 180 graus", "tomada usb", "manta e travesseiro"],
-            },
-        ),
-        # 2. Voo Direto Ponte Aérea (Rápido)
-        StandardizedQuote(
-            origin_external_id=orig_clean if len(orig_clean) == 3 else "CGH",
-            destination_external_id=dest_clean if len(dest_clean) == 3 else "SDU",
-            modal="AIR",
-            provider_source="amadeus",
-            carrier_name="LATAM Airlines",
-            service_class="ECONOMY",
-            departure_time=dep_base.replace(hour=14, minute=0),
-            arrival_time=dep_base.replace(hour=15, minute=10),
-            duration_minutes=70,
-            door_to_door_duration_minutes=190,
-            base_price=410.0,
-            taxes_price=35.50,
-            baggage_fee_estimate=110.0,
-            transfer_cost_estimate=38.0,
-            route_metadata={
-                "is_direct": True,
-                "stops_count": 0,
-                "aircraft": "Airbus A320",
-                "operating_carrier_name": "LATAM Airlines",
-            },
-        ),
-        # 3. Voo com Conexão em GRU
-        StandardizedQuote(
-            origin_external_id=orig_clean if len(orig_clean) == 3 else "CGH",
-            destination_external_id=dest_clean if len(dest_clean) == 3 else "SDU",
-            modal="AIR",
-            provider_source="amadeus",
-            carrier_name="GOL Linhas Aéreas",
-            service_class="ECONOMY",
-            departure_time=dep_base.replace(hour=16, minute=30),
-            arrival_time=dep_base.replace(hour=19, minute=45),
-            duration_minutes=195,
-            door_to_door_duration_minutes=315,
-            base_price=289.0,
-            taxes_price=42.0,
-            baggage_fee_estimate=110.0,
-            transfer_cost_estimate=45.0,
-            route_metadata={
-                "is_direct": False,
-                "stops_count": 1,
-                "layover_airports": ["GRU"],
-                "connection_diagnostics": {
-                    "total_connection_penalty_points": 100.0,
-                    "tightest_layover_minutes": 42,
-                    "is_tight": True,
-                },
-                "layover_durations_minutes": [42],
-            },
-        ),
-        # 4. Ônibus Semi-Leito Expresso (Econômico)
-        StandardizedQuote(
-            origin_external_id=f"{orig_clean}-BARRA-FUNDA",
-            destination_external_id=f"{dest_clean}-NOVO-RIO",
-            modal="ROAD",
-            provider_source="clickbus",
-            carrier_name="Expresso do Sul",
-            service_class="SEMI_LEITO",
-            departure_time=dep_base.replace(hour=8, minute=30),
-            arrival_time=dep_base.replace(hour=14, minute=30),
-            duration_minutes=360,
-            door_to_door_duration_minutes=400,
-            base_price=169.0,
-            taxes_price=0.0,
-            baggage_fee_estimate=0.0,
-            transfer_cost_estimate=22.0,
-            route_metadata={
-                "is_direct": True,
-                "stops_count": 1,
-                "amenities": ["wi-fi", "ar condicionado"],
-            },
-        ),
-    ]
+        # Distância geodésica real entre os hubs
+        if orig_hub and dest_hub:
+            dist_km = round(
+                geodesic((orig_hub.latitude, orig_hub.longitude), (dest_hub.latitude, dest_hub.longitude)).kilometers,
+                1,
+            )
+        else:
+            dist_km = 350.0
 
+        # Fator de sinuosidade rodoviária no relevo brasileiro (~1.18x)
+        road_km = max(40.0, round(dist_km * 1.18, 1))
+
+        # Duração rodoviária baseada em velocidade comercial de ônibus de linha (~75 km/h)
+        road_duration_min = max(45, int((road_km / 75.0) * 60))
+        door_to_door_road = road_duration_min + settings.BUS_TERMINAL_CHECKIN_BUFFER_MINUTES
+
+        orig_road_code = orig_road_term.official_code if orig_road_term else f"{origin.upper()}-ROD"
+        dest_road_code = dest_road_term.official_code if dest_road_term else f"{dest.upper()}-ROD"
+
+        # Tarifas estimadas por quilômetro (heurística, não tabela ANTT oficial)
+        base_semi = round(max(32.0, road_km * 0.38 + 12.0), 2)
+        base_leito = round(max(65.0, road_km * 0.62 + 20.0), 2)
+
+        def _sim_meta(extra: Dict[str, Any]) -> Dict[str, Any]:
+            meta = {
+                "is_simulated": True,
+                "simulation_notice": SIMULATION_NOTICE,
+                "is_direct": True,
+            }
+            meta.update(extra)
+            return meta
+
+        quotes: List[StandardizedQuote] = []
+
+        # 1. Ônibus Semi-Leito Diurno (estimativa)
+        semi_dep = dep_base.replace(hour=8, minute=30)
+        quotes.append(
+            StandardizedQuote(
+                origin_external_id=orig_road_code,
+                destination_external_id=dest_road_code,
+                modal="ROAD",
+                provider_source=SIMULATION_PROVIDER,
+                carrier_name="Ônibus Semi-Leito (estimativa)",
+                service_class="SEMI_LEITO",
+                departure_time=semi_dep,
+                arrival_time=semi_dep + timedelta(minutes=road_duration_min),
+                duration_minutes=road_duration_min,
+                door_to_door_duration_minutes=door_to_door_road,
+                base_price=base_semi,
+                route_metadata=_sim_meta({
+                    "stops_count": 1 if road_km > 200 else 0,
+                    "road_distance_km": road_km,
+                }),
+            )
+        )
+
+        # 2. Ônibus Leito Cama Noturno (estimativa)
+        leito_dep_hour = 23 if road_duration_min >= 270 else 18
+        leito_dep_min = 0 if road_duration_min >= 270 else 30
+        leito_dep = dep_base.replace(hour=leito_dep_hour, minute=leito_dep_min)
+        quotes.append(
+            StandardizedQuote(
+                origin_external_id=orig_road_code,
+                destination_external_id=dest_road_code,
+                modal="ROAD",
+                provider_source=SIMULATION_PROVIDER,
+                carrier_name="Ônibus Leito-Cama (estimativa)",
+                service_class="LEITO_CAMA",
+                departure_time=leito_dep,
+                arrival_time=leito_dep + timedelta(minutes=road_duration_min),
+                duration_minutes=road_duration_min,
+                door_to_door_duration_minutes=door_to_door_road,
+                base_price=base_leito,
+                route_metadata=_sim_meta({
+                    "stops_count": 0,
+                    "road_distance_km": road_km,
+                }),
+            )
+        )
+
+        # 3. Voo direto (se ambos os hubs tiverem aeroporto e a distância for superior a 100km)
+        if orig_air_term and dest_air_term and dist_km >= 100.0:
+            orig_air_code = orig_air_term.official_code or "AER"
+            dest_air_code = dest_air_term.official_code or "AER"
+
+            # Duração de voo (cruzeiro ~650 km/h + 25 min subida/descida)
+            flight_duration_min = max(45, int((dist_km / 650.0) * 60) + 25)
+            base_air = round(max(240.0, dist_km * 0.65 + 150.0), 2)
+            tax_air = round(max(35.0, dist_km * 0.08 + 25.0), 2)
+            air_dep = dep_base.replace(hour=14, minute=0)
+
+            quotes.append(
+                StandardizedQuote(
+                    origin_external_id=orig_air_code,
+                    destination_external_id=dest_air_code,
+                    modal="AIR",
+                    provider_source=SIMULATION_PROVIDER,
+                    carrier_name="Voo direto (estimativa)",
+                    service_class="ECONOMY",
+                    departure_time=air_dep,
+                    arrival_time=air_dep + timedelta(minutes=flight_duration_min),
+                    duration_minutes=flight_duration_min,
+                    door_to_door_duration_minutes=flight_duration_min + settings.AIRPORT_DOMESTIC_CHECKIN_BUFFER_MINUTES,
+                    base_price=base_air,
+                    taxes_price=tax_air,
+                    baggage_fee_estimate=settings.DEFAULT_FLIGHT_BAGGAGE_FEE_ESTIMATE_BRL,
+                    route_metadata=_sim_meta({
+                        "stops_count": 0,
+                        "flight_distance_km": dist_km,
+                    }),
+                )
+            )
+
+        return quotes
+
+    finally:
+        if own_session:
+            db.close()
+
+
+# ==============================================================================
+# 3. Coleta Concorrente e Esteira de Inteligência
+# ==============================================================================
 
 async def _fetch_provider_batch(
     collector_name: str,
@@ -189,27 +333,109 @@ def _process_and_score_quotes(
     hourly_time_value: float,
     db_session: Optional[Session] = None,
 ) -> List[StandardizedQuote]:
-    """Aplica a esteira de inteligência: deduplicação, route evaluator, termômetro e Trivio Score."""
+    """Aplica a esteira de inteligência ANTES do streaming.
+
+    Ordem: resolução canônica + transfer urbano + porta a porta -> deduplicação ->
+    prós/contras -> termômetro -> Trivio Score. Assim o card recebido pelo frontend
+    já contém o Custo Efetivo Real completo e o Score coerente com ele.
+    """
     if not quotes:
         return []
 
-    # 1. Deduplicação
+    # 1. Terminais canônicos, custo/tempo de transfer urbano e tempo porta a porta
+    if db_session is not None:
+        for q in quotes:
+            QuotePipeline.enrich_quote(q, db_session)
+
+    # 2. Deduplicação (assinatura usa os IDs canônicos resolvidos acima)
     deduped = deduplicate_quotes(quotes, attach_sellers_info=True)
 
-    # 2. Prós, Contras e Contratempos
+    # 3. Prós, Contras e Contratempos (reavaliados com os dados de code-share)
     for q in deduped:
         enrich_quote_with_evaluation(q)
 
-    # 3. Termômetro de Preço
+    # 4. Termômetro de Preço
     enrich_quotes_batch_with_thermometer(deduped, db=db_session)
 
-    # 4. Cálculo do Trivio Score e ordenação
-    ranked = score_and_rank_quotes(deduped, hourly_time_value=hourly_time_value)
-    return ranked
+    # 5. Cálculo do Trivio Score e ordenação
+    return score_and_rank_quotes(deduped, hourly_time_value=hourly_time_value)
+
+
+def _build_interline_quotes(
+    origin: str,
+    destination: str,
+    travel_date: str,
+    interline_hubs: List[Tuple[Hub, Terminal, Terminal]],
+    leg_results: Dict[str, List[StandardizedQuote]],
+    simulation_mode: bool,
+    hourly_value: float,
+    db: Session,
+) -> List[StandardizedQuote]:
+    """Constrói rotas Ônibus (Origem -> Hub) + Voo (Hub -> Destino) para cada hub candidato."""
+    all_routes: List[VirtualInterlineRoute] = []
+
+    for hub, hub_road_term, hub_air_term in interline_hubs:
+        leg1_raw = list(leg_results.get(f"interline_leg1::{hub.id}", []))
+        leg2_raw = list(leg_results.get(f"interline_leg2::{hub.id}", []))
+
+        # No modo simulação, as pernas também são estimadas (nunca misturamos com dados reais)
+        if simulation_mode:
+            if not leg1_raw:
+                leg1_raw = [
+                    q for q in get_corridor_quotes(origin, hub_road_term.official_code or hub.name, travel_date, db=db)
+                    if q.modal == "ROAD"
+                ]
+            if not leg2_raw:
+                leg2_raw = [
+                    q for q in get_corridor_quotes(hub_air_term.official_code or hub.name, destination, travel_date, db=db)
+                    if q.modal == "AIR"
+                ]
+
+        hub_codes = {t.official_code for t in hub.terminals if t.official_code}
+        terminal_lookup = {t.official_code: t for t in hub.terminals if t.official_code}
+
+        # Mantém apenas pernas que de fato chegam ao / partem do hub intermediário
+        leg1 = [
+            q for q in _process_and_score_quotes(leg1_raw, hourly_value, db)
+            if q.modal == "ROAD" and q.canonical_destination_id in hub_codes
+        ]
+        leg2 = [
+            q for q in _process_and_score_quotes(leg2_raw, hourly_value, db)
+            if q.modal == "AIR" and q.canonical_origin_id in hub_codes
+        ]
+        if not leg1 or not leg2:
+            continue
+
+        all_routes.extend(
+            build_virtual_interline_routes(
+                origin_id=origin,
+                destination_id=destination,
+                leg1_quotes=leg1,
+                leg2_quotes=leg2,
+                hub_name=f"{hub.name}, {hub.state}",
+                hub_id=hub.id,
+                terminal_lookup=terminal_lookup,
+                hourly_time_value=hourly_value,
+            )
+        )
+
+    all_routes.sort(key=lambda r: r.trivio_score)
+
+    interline_quotes: List[StandardizedQuote] = []
+    for route in all_routes[:10]:
+        quote = route.to_standardized_quote()
+        legs_simulated = any(
+            (getattr(leg, "route_metadata", None) or {}).get("is_simulated") for leg in (route.leg1, route.leg2)
+        )
+        if legs_simulated:
+            quote.route_metadata["is_simulated"] = True
+            quote.route_metadata["simulation_notice"] = SIMULATION_NOTICE
+        interline_quotes.append(quote)
+    return interline_quotes
 
 
 # ==============================================================================
-# 2. Orquestrador Principal de Busca em Streaming
+# 4. Orquestrador Principal de Busca em Streaming
 # ==============================================================================
 
 async def orchestrate_search(
@@ -222,10 +448,77 @@ async def orchestrate_search(
     destination = str(params.get("destination", "")).strip()
     travel_date = str(params.get("date", "")).strip()
     return_date = params.get("return_date")
-    hourly_value = float(params.get("hourly_value", 35.0))
-    enable_interlining = bool(params.get("enable_virtual_interlining", True))
+    hourly_value = float(params.get("hourly_value", settings.DEFAULT_HOURLY_TIME_VALUE_BRL))
+    radius_km = float(params.get("radius_km") or settings.DEFAULT_CATCHMENT_RADIUS_KM)
+    enable_interlining = str(params.get("enable_virtual_interlining", True)).strip().lower() not in ("false", "0", "no")
 
     start_search_time = time.perf_counter()
+
+    # Sessão de banco para resolução canônica, termômetro e persistência
+    db = SessionLocal()
+    try:
+        await _run_search(
+            websocket, db, session_id, origin, destination, travel_date, return_date,
+            hourly_value, radius_km, enable_interlining, start_search_time,
+        )
+    finally:
+        db.close()
+
+
+def _validate_search_params(
+    origin: str,
+    destination: str,
+    travel_date: str,
+    return_date: Optional[str],
+    orig_hub: Optional[Hub],
+    dest_hub: Optional[Hub],
+) -> Optional[str]:
+    """Retorna uma mensagem de erro amigável se os parâmetros da busca forem inválidos."""
+    if not origin or not destination:
+        return "Informe a origem e o destino da viagem."
+    for label, value in (("ida", travel_date), ("volta", return_date)):
+        if label == "volta" and not value:
+            continue
+        try:
+            datetime.strptime(str(value), "%Y-%m-%d")
+        except ValueError:
+            return f"Data de {label} inválida. Utilize o formato AAAA-MM-DD."
+    if not orig_hub:
+        return f"Origem não reconhecida: '{origin}'."
+    if not dest_hub:
+        return f"Destino não reconhecido: '{destination}'."
+    if orig_hub.id == dest_hub.id:
+        return "A origem e o destino precisam ser cidades diferentes."
+    return None
+
+
+async def _run_search(
+    websocket: WebSocket,
+    db: Session,
+    session_id: str,
+    origin: str,
+    destination: str,
+    travel_date: str,
+    return_date: Optional[str],
+    hourly_value: float,
+    radius_km: float,
+    enable_interlining: bool,
+    start_search_time: float,
+) -> None:
+    """Valida os parâmetros e executa a busca concorrente com streaming de eventos."""
+    resolver = EntityResolver(db)
+    orig_hub, orig_road_term, orig_air_term = _resolve_hub_and_terminals(origin, db, resolver)
+    dest_hub, dest_road_term, dest_air_term = _resolve_hub_and_terminals(destination, db, resolver)
+
+    validation_error = _validate_search_params(origin, destination, travel_date, return_date, orig_hub, dest_hub)
+    if validation_error:
+        await websocket.send_json({
+            "event": "SEARCH_ERROR",
+            "session_id": session_id,
+            "message": validation_error,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        return
 
     # 1. Emite SEARCH_STARTED
     await websocket.send_json({
@@ -239,42 +532,63 @@ async def orchestrate_search(
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 
-    # Instancia coletores
     road_collector = ClickBusCollector()
     air_collector = AmadeusCollector()
 
-    # Cria sessão de banco para termômetro e persistência
-    db = SessionLocal()
+    orig_clickbus = _clickbus_external_id(db, orig_road_term, origin)
+    dest_clickbus = _clickbus_external_id(db, dest_road_term, destination)
+    orig_air_code = orig_air_term.official_code if orig_air_term else origin.upper()
+    dest_air_code = dest_air_term.official_code if dest_air_term else destination.upper()
+
+    # Hubs intermediários para Virtual Interlining (só faz sentido se o destino tiver aeroporto)
+    interline_hubs: List[Tuple[Hub, Terminal, Terminal]] = []
+    if enable_interlining and dest_air_term:
+        interline_hubs = _find_interline_hubs(orig_hub, dest_hub, db, radius_km)
 
     all_outbound_quotes: List[StandardizedQuote] = []
     all_inbound_quotes: List[StandardizedQuote] = []
-    road_outbound: List[StandardizedQuote] = []
-    air_outbound: List[StandardizedQuote] = []
+    leg_results: Dict[str, List[StandardizedQuote]] = {}
 
     # Tarefas assíncronas concorrentes de Ida
-    tasks = {
+    tasks = [
         asyncio.create_task(
-            _fetch_provider_batch("clickbus", road_collector, origin, destination, travel_date)
-        ): "clickbus",
+            _fetch_provider_batch("clickbus", road_collector, orig_clickbus, dest_clickbus, travel_date)
+        ),
         asyncio.create_task(
-            _fetch_provider_batch("amadeus", air_collector, origin, destination, travel_date)
-        ): "amadeus",
-    }
+            _fetch_provider_batch("amadeus", air_collector, orig_air_code, dest_air_code, travel_date)
+        ),
+    ]
 
     # Se houver data de volta, adiciona tarefas concorrentes de Volta para Hacker Fares
     if return_date:
-        tasks[asyncio.create_task(
-            _fetch_provider_batch("clickbus_return", road_collector, destination, origin, return_date)
-        )] = "clickbus_return"
-        tasks[asyncio.create_task(
-            _fetch_provider_batch("amadeus_return", air_collector, destination, origin, return_date)
-        )] = "amadeus_return"
+        tasks.append(asyncio.create_task(
+            _fetch_provider_batch("clickbus_return", road_collector, dest_clickbus, orig_clickbus, return_date)
+        ))
+        tasks.append(asyncio.create_task(
+            _fetch_provider_batch("amadeus_return", air_collector, dest_air_code, orig_air_code, return_date)
+        ))
+
+    # Pernas do Virtual Interlining: Ônibus Origem -> Hub e Voo Hub -> Destino
+    for hub, hub_road_term, hub_air_term in interline_hubs:
+        hub_clickbus = _clickbus_external_id(db, hub_road_term, hub_road_term.official_code or hub.name)
+        tasks.append(asyncio.create_task(
+            _fetch_provider_batch(f"interline_leg1::{hub.id}", road_collector, orig_clickbus, hub_clickbus, travel_date)
+        ))
+        tasks.append(asyncio.create_task(
+            _fetch_provider_batch(f"interline_leg2::{hub.id}", air_collector, hub_air_term.official_code, dest_air_code, travel_date)
+        ))
 
     try:
         # 2. Processa cada lote progressivamente à medida que responde (as_completed)
-        for completed_coroutine in asyncio.as_completed(tasks.keys()):
+        for completed_coroutine in asyncio.as_completed(tasks):
             result = await completed_coroutine
             prov = result["provider"]
+
+            # Pernas de interlining não são opções Origem -> Destino: apenas armazena
+            if prov.startswith("interline_"):
+                if result["success"]:
+                    leg_results[prov] = result["quotes"]
+                continue
 
             if not result["success"]:
                 await websocket.send_json({
@@ -286,26 +600,17 @@ async def orchestrate_search(
                 })
                 continue
 
-            raw_quotes = result["quotes"]
-
-            # Processa e ranqueia lote
             processed_quotes = _process_and_score_quotes(
-                quotes=raw_quotes,
+                quotes=result["quotes"],
                 hourly_time_value=hourly_value,
                 db_session=db,
             )
 
-            # Rastreia cotações para sínteses posteriores
             if "_return" in prov:
                 all_inbound_quotes.extend(processed_quotes)
             else:
                 all_outbound_quotes.extend(processed_quotes)
-                if result["modal"] == "ROAD":
-                    road_outbound.extend(processed_quotes)
-                elif result["modal"] == "AIR":
-                    air_outbound.extend(processed_quotes)
 
-            # Transmite QUOTE_BATCH imediatamente para o cliente
             await websocket.send_json({
                 "event": "QUOTE_BATCH",
                 "session_id": session_id,
@@ -316,52 +621,59 @@ async def orchestrate_search(
                 "elapsed_ms": result["elapsed_ms"],
             })
 
-        # Fallback inteligente se coletores externos não retornaram dados (ex: WAF 403 ou sem credenciais no .env)
-        if not all_outbound_quotes:
-            fallback_sample = get_corridor_quotes(origin, destination, travel_date)
-            processed_sample = _process_and_score_quotes(fallback_sample, hourly_time_value=hourly_value, db_session=db)
+        # Modo simulação: nenhum coletor real retornou dados (ex: WAF 403 ou sem credenciais no .env)
+        simulation_mode = not all_outbound_quotes
+        if simulation_mode:
+            logger.warning(
+                f"[{session_id}] Nenhum coletor real retornou cotações para {origin}->{destination}. "
+                "Exibindo estimativas simuladas (não persistidas)."
+            )
+            simulated = get_corridor_quotes(origin, destination, travel_date, db=db)
+            processed_sample = _process_and_score_quotes(simulated, hourly_time_value=hourly_value, db_session=db)
             all_outbound_quotes.extend(processed_sample)
-            road_outbound = [q for q in processed_sample if q.modal == "ROAD"]
-            air_outbound = [q for q in processed_sample if q.modal == "AIR"]
             await websocket.send_json({
                 "event": "QUOTE_BATCH",
                 "session_id": session_id,
-                "provider": "trivio_intelligence_engine",
+                "provider": SIMULATION_PROVIDER,
                 "modal": "HYBRID",
+                "is_simulated": True,
                 "count": len(processed_sample),
                 "quotes": [q.to_dict() for q in processed_sample],
                 "elapsed_ms": round((time.perf_counter() - start_search_time) * 1000, 1),
             })
 
         if return_date and not all_inbound_quotes:
-            inbound_sample = get_corridor_quotes(destination, origin, return_date)
+            inbound_sample = get_corridor_quotes(destination, origin, return_date, db=db)
             processed_inbound = _process_and_score_quotes(inbound_sample, hourly_time_value=hourly_value, db_session=db)
             all_inbound_quotes.extend(processed_inbound)
 
-        # 3. Síntese de Virtual Interlining (se habilitado e viável)
-        if enable_interlining and road_outbound and air_outbound:
+        # 3. Síntese de Virtual Interlining (Ônibus Origem -> Hub + Voo Hub -> Destino)
+        if interline_hubs:
             try:
-                interline_routes = build_virtual_interline_routes(
-                    origin_id=origin,
-                    destination_id=destination,
-                    leg1_quotes=road_outbound,
-                    leg2_quotes=air_outbound,
-                    hourly_time_value=hourly_value,
+                interline_quotes = _build_interline_quotes(
+                    origin=origin,
+                    destination=destination,
+                    travel_date=travel_date,
+                    interline_hubs=interline_hubs,
+                    leg_results=leg_results,
+                    simulation_mode=simulation_mode,
+                    hourly_value=hourly_value,
+                    db=db,
                 )
-                if interline_routes:
-                    interline_quotes = [r.to_standardized_quote() for r in interline_routes]
+                if interline_quotes:
                     all_outbound_quotes.extend(interline_quotes)
                     await websocket.send_json({
                         "event": "QUOTE_BATCH",
                         "session_id": session_id,
                         "provider": "trivio_interliner",
                         "modal": "ROAD_AIR",
+                        "is_simulated": any(q.route_metadata.get("is_simulated") for q in interline_quotes),
                         "count": len(interline_quotes),
                         "quotes": [q.to_dict() for q in interline_quotes],
                         "elapsed_ms": round((time.perf_counter() - start_search_time) * 1000, 1),
                     })
             except Exception as il_err:
-                logger.warning(f"Erro ao sintetizar rotas de interlining: {il_err}")
+                logger.warning(f"Erro ao sintetizar rotas de interlining: {il_err}", exc_info=True)
 
         # 4. Geração de Hacker Fares (se houver bilhetes de volta)
         if return_date and all_outbound_quotes and all_inbound_quotes:
@@ -381,13 +693,14 @@ async def orchestrate_search(
             except Exception as hf_err:
                 logger.warning(f"Erro ao gerar combinações Hacker Fares: {hf_err}")
 
-        # 5. Persistência em Banco de Dados com Smart Cache TTL
+        # 5. Persistência com Smart Cache TTL (o pipeline descarta simulações e rotas sintetizadas)
         try:
             if all_outbound_quotes:
                 process_and_persist_quotes(all_outbound_quotes, db)
             if all_inbound_quotes:
                 process_and_persist_quotes(all_inbound_quotes, db)
         except Exception as db_err:
+            db.rollback()
             logger.warning(f"Erro não fatal ao salvar cotações no cache: {db_err}")
 
         # 6. Emite SEARCH_COMPLETED com estatísticas finais
@@ -397,11 +710,8 @@ async def orchestrate_search(
             if all_outbound_quotes
             else 0.0
         )
-        best_trivio_score = (
-            min(q.trivio_score for q in all_outbound_quotes if q.trivio_score is not None)
-            if all_outbound_quotes
-            else 0.0
-        )
+        scores = [q.trivio_score for q in all_outbound_quotes if q.trivio_score is not None]
+        best_trivio_score = min(scores) if scores else 0.0
 
         await websocket.send_json({
             "event": "SEARCH_COMPLETED",
@@ -410,15 +720,19 @@ async def orchestrate_search(
             "total_elapsed_ms": total_search_elapsed,
             "cheapest_effective_price": round(cheapest_price, 2),
             "best_trivio_score": round(best_trivio_score, 1),
+            "is_simulated": simulation_mode,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
     finally:
-        db.close()
+        # Busca cancelada ou com erro: não deixa coletores rodando em segundo plano
+        for task in tasks:
+            if not task.done():
+                task.cancel()
 
 
 # ==============================================================================
-# 3. Endpoint WebSocket do FastAPI
+# 5. Endpoint WebSocket do FastAPI
 # ==============================================================================
 
 @router.websocket("/ws/search")

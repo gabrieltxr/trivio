@@ -8,6 +8,7 @@ from app.collectors.base import (
     CollectorBlockedError,
     CollectorError,
     CollectorNetworkError,
+    CollectorNotAuthorizedError,
     CollectorParsingError,
     CollectorRateLimitError,
     CollectorTimeoutError,
@@ -15,7 +16,19 @@ from app.collectors.base import (
     collector_retry,
     generate_dedup_signature,
     get_default_async_client,
+    get_default_headers,
     is_transient_error,
+)
+from app.collectors.compliance import (
+    ComplianceError,
+    CompliantHTTPClient,
+    NotAuthorizedError,
+    PolitenessLimiter,
+    RobotsDisallowedError,
+    RobotsPolicy,
+    build_user_agent,
+    compliant_headers,
+    get_robots_policy,
 )
 
 __all__ = [
@@ -23,6 +36,7 @@ __all__ = [
     "CollectorBlockedError",
     "CollectorError",
     "CollectorNetworkError",
+    "CollectorNotAuthorizedError",
     "CollectorParsingError",
     "CollectorRateLimitError",
     "CollectorTimeoutError",
@@ -30,5 +44,16 @@ __all__ = [
     "collector_retry",
     "generate_dedup_signature",
     "get_default_async_client",
+    "get_default_headers",
     "is_transient_error",
+    # Conformidade de coleta
+    "ComplianceError",
+    "CompliantHTTPClient",
+    "NotAuthorizedError",
+    "PolitenessLimiter",
+    "RobotsDisallowedError",
+    "RobotsPolicy",
+    "build_user_agent",
+    "compliant_headers",
+    "get_robots_policy",
 ]

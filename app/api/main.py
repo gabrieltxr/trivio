@@ -11,6 +11,16 @@ Configura:
 6. Inclusão dos roteadores REST e WebSocket da API v1.
 """
 
+import sys
+import asyncio
+
+# No Windows, define ProactorEventLoop como política padrão para suportar subprocessos do Playwright
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
+
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
@@ -29,6 +39,31 @@ from app.config import settings
 from app.database import engine, Base
 
 logger = logging.getLogger("trivio.api")
+
+
+def configure_logging() -> None:
+    """Aplica o LOG_LEVEL do .env aos loggers do Trivio.
+
+    Sem isso o Python usa o handler de último recurso, que só mostra WARNING para
+    cima: todo o rastro INFO dos coletores (incluindo as decisões de conformidade,
+    robots.txt e recusas de acesso) ficava invisível no terminal do uvicorn.
+    """
+    level = getattr(logging, settings.LOG_LEVEL.strip().upper(), logging.INFO)
+    trivio_logger = logging.getLogger("trivio")
+    trivio_logger.setLevel(level)
+
+    if not trivio_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(levelname)-8s %(name)s: %(message)s")
+        )
+        trivio_logger.addHandler(handler)
+
+    # Já temos handler próprio; evita duplicar a mensagem via logger raiz.
+    trivio_logger.propagate = False
+
+
+configure_logging()
 
 
 # ==============================================================================

@@ -293,3 +293,102 @@ def test_to_standardized_quote_conversion():
     assert std_quote.arrival_time == base_date.replace(hour=15, minute=10)
     assert std_quote.total_effective_price == round(125.0 + DEFAULT_INTERMODAL_TRANSFER_COST_BRL + 475.0, 2)
     assert std_quote.route_metadata["is_virtual_interline"] is True
+
+
+def test_virtual_interlining_same_hub_terminal_id_is_not_dropped():
+    """Perna 1 chegando ao mesmo identificador de onde parte a perna 2 deve gerar rota.
+
+    Antes, o nó único do hub tinha o tipo HUB_ARRIVAL sobrescrito por HUB_DEPARTURE
+    e nenhuma rota era encontrada.
+    """
+    base_date = datetime(2026, 11, 20)
+    bus_quote = {
+        "canonical_origin_id": "ROD_RIO_GRANDE",
+        "canonical_destination_id": "HUB_PELOTAS",
+        "modal": "ROAD",
+        "carrier_name": "Ônibus",
+        "service_class": "CONVENCIONAL",
+        "departure_time": base_date.replace(hour=7, minute=0),
+        "arrival_time": base_date.replace(hour=8, minute=0),
+        "duration_minutes": 60,
+        "door_to_door_duration_minutes": 80,
+        "base_price": 40.0,
+        "total_effective_price": 40.0,
+    }
+    flight_quote = {
+        "canonical_origin_id": "HUB_PELOTAS",
+        "canonical_destination_id": "CGH",
+        "modal": "AIR",
+        "carrier_name": "Voo",
+        "service_class": "ECONOMY",
+        "departure_time": base_date.replace(hour=12, minute=0),
+        "arrival_time": base_date.replace(hour=14, minute=0),
+        "duration_minutes": 120,
+        "door_to_door_duration_minutes": 210,
+        "base_price": 400.0,
+        "total_effective_price": 400.0,
+    }
+
+    routes = build_virtual_interline_routes(
+        origin_id="RIG",
+        destination_id="SAO",
+        leg1_quotes=[bus_quote],
+        leg2_quotes=[flight_quote],
+        hub_name="Pelotas, RS",
+        hub_id=6,
+    )
+
+    assert len(routes) == 1
+    assert routes[0].connection_window_minutes == 240
+
+
+def test_virtual_interlining_door_to_door_includes_hub_wait():
+    """O porta a porta da rota híbrida nunca pode ser menor que o tempo corrido da viagem.
+
+    Deve somar: acesso na origem + (partida da perna 1 até chegada da perna 2) + saída no destino.
+    """
+    base_date = datetime(2026, 11, 20)
+    bus_quote = {
+        "canonical_destination_id": "HUB_ROD",
+        "modal": "ROAD",
+        "service_class": "SEMI_LEITO",
+        "departure_time": base_date.replace(hour=8, minute=30),
+        "arrival_time": base_date.replace(hour=9, minute=30),
+        "duration_minutes": 60,
+        "door_to_door_duration_minutes": 60 + 15 + 20 + 20,
+        "total_effective_price": 50.0,
+        "route_metadata": {
+            "origin_transfer_minutes": 15,
+            "destination_transfer_minutes": 20,
+            "checkin_buffer_minutes": 20,
+        },
+    }
+    flight_quote = {
+        "canonical_origin_id": "HUB_AIR",
+        "modal": "AIR",
+        "service_class": "ECONOMY",
+        "departure_time": base_date.replace(hour=14, minute=0),
+        "arrival_time": base_date.replace(hour=16, minute=0),
+        "duration_minutes": 120,
+        "door_to_door_duration_minutes": 120 + 30 + 40 + 90,
+        "total_effective_price": 400.0,
+        "route_metadata": {
+            "origin_transfer_minutes": 30,
+            "destination_transfer_minutes": 40,
+            "checkin_buffer_minutes": 90,
+        },
+    }
+
+    routes = build_virtual_interline_routes(
+        origin_id="ORIG",
+        destination_id="DEST",
+        leg1_quotes=[bus_quote],
+        leg2_quotes=[flight_quote],
+    )
+
+    assert len(routes) == 1
+    r = routes[0]
+    assert r.total_duration_minutes == 450  # 08:30 -> 16:00
+    # 15 (transfer origem) + 20 (antecedência rodoviária) + 450 + 40 (transfer destino)
+    assert r.door_to_door_duration_minutes == 525
+    assert r.door_to_door_duration_minutes >= r.total_duration_minutes

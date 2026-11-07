@@ -102,3 +102,21 @@ class CachedSearchResponse(BaseModel):
     travel_date: Optional[str] = None
     total_quotes: int
     quotes: List[FareQuoteResponse]
+
+
+# ==============================================================================
+# 4. Schemas de Autocomplete e Busca de Localidades
+# ==============================================================================
+
+class LocationSuggestion(BaseModel):
+    id: str
+    type: str  # "hub" | "airport" | "bus_station"
+    name: str
+    city: str
+    state: str
+    code: str
+    modal: str  # "ALL" | "AIR" | "ROAD"
+    title: str
+    subtitle: str
+    highlight: Optional[str] = None
+

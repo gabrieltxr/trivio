@@ -13,6 +13,8 @@ from app.analyzers.price_thermometer import (
     enrich_quotes_batch_with_thermometer,
     evaluate_price_distribution,
     fetch_historical_prices_from_db,
+    fetch_route_monthly_means,
+    MIN_OFFICIAL_MONTHS,
 )
 from app.analyzers.route_evaluator import (
     ConnectionDiagnostic,
@@ -60,6 +62,8 @@ __all__ = [
     "enrich_quotes_batch_with_thermometer",
     "evaluate_price_distribution",
     "fetch_historical_prices_from_db",
+    "fetch_route_monthly_means",
+    "MIN_OFFICIAL_MONTHS",
     # Virtual Interlining Graph
     "TransferLeg",
     "VirtualInterlineRoute",

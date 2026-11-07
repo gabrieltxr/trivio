@@ -22,10 +22,12 @@ from app.api.schemas import (
     FareQuoteResponse,
     HubBase,
     HubDetailResponse,
+    LocationSuggestion,
     TerminalBase,
 )
 from app.database import get_db
 from app.geo.catchment import CatchmentFinder
+from app.geo.entity_resolver import normalize_text
 from app.models import FareQuote, Hub, ModalType, Terminal
 
 logger = logging.getLogger("trivio.api.routes")
@@ -111,6 +113,140 @@ def list_terminals(
     stmt = stmt.order_by(Terminal.name.asc()).offset(offset).limit(limit)
     terminals = db.execute(stmt).scalars().all()
     return terminals
+
+
+# ==============================================================================
+# 2.1 Autocomplete Unificado de Localidades (Hubs, Aeroportos e Rodoviárias)
+# ==============================================================================
+
+HUB_METRO_CODES = {
+    "sao paulo": "SAO",
+    "rio de janeiro": "RIO",
+    "curitiba": "CWB",
+    "porto alegre": "POA",
+    "campinas": "VCP",
+    "pelotas": "PET",
+    "rio grande": "RIG",
+    "belo horizonte": "BHZ",
+    "brasilia": "BSB",
+    "florianopolis": "FLN",
+    "salvador": "SSA",
+    "fortaleza": "FOR",
+    "recife": "REC",
+}
+
+
+@router.get(
+    "/locations/autocomplete",
+    response_model=List[LocationSuggestion],
+    summary="Autocomplete unificado de cidades, aeroportos e rodoviárias",
+)
+@router.get(
+    "/locations/search",
+    response_model=List[LocationSuggestion],
+    summary="Busca unificada de localidades para preenchimento de Origem/Destino",
+)
+def autocomplete_locations(
+    query: Optional[str] = Query(None, description="Termo de pesquisa (cidade, aeroporto, rodoviária ou IATA)"),
+    limit: int = Query(15, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    """Busca em tempo real com tolerância a acentos, priorizando correspondências exatas e por sigla."""
+    clean_q = normalize_text(query or "")
+    upper_q = (query or "").strip().upper()
+
+    # Busca todos os Hubs e Terminais com eager loading do Hub
+    hubs = db.execute(select(Hub)).scalars().all()
+    terminals = db.execute(select(Terminal).options(joinedload(Terminal.hub))).scalars().all()
+
+    scored_results: List[tuple[int, LocationSuggestion]] = []
+
+    # 1. Avalia Hubs
+    for h in hubs:
+        h_norm = normalize_text(h.name)
+        code = HUB_METRO_CODES.get(h_norm, h.name[:3].upper())
+        h_state = h.state.upper()
+
+        score = 99
+        if not clean_q:
+            # Sem busca: popularidade padrão
+            score = 10
+        elif upper_q == code:
+            score = 0
+        elif clean_q == h_norm:
+            score = 1
+        elif h_norm.startswith(clean_q):
+            score = 2
+        elif code.startswith(upper_q):
+            score = 3
+        elif clean_q in h_norm or clean_q in f"{h_norm} {h_state.lower()}":
+            score = 5
+
+        if score < 90:
+            scored_results.append((
+                score,
+                LocationSuggestion(
+                    id=f"hub-{h.id}",
+                    type="hub",
+                    name=h.name,
+                    city=h.name,
+                    state=h_state,
+                    code=code,
+                    modal="ALL",
+                    title=f"{h.name}, {h_state}",
+                    subtitle="Todos os aeroportos e rodoviárias (Hub Principal)",
+                    highlight=code,
+                )
+            ))
+
+    # 2. Avalia Terminais (Aeroportos e Rodoviárias)
+    for t in terminals:
+        t_norm = normalize_text(t.name)
+        t_code = (t.official_code or "").upper()
+        h_name = t.hub.name if t.hub else ""
+        h_state = (t.hub.state if t.hub else "").upper()
+        h_norm = normalize_text(h_name)
+
+        is_air = t.modal == ModalType.AIR
+        type_str = "airport" if is_air else "bus_station"
+        type_desc = f"Aeroporto • IATA: {t_code}" if is_air else "Terminal Rodoviário"
+
+        score = 99
+        if not clean_q:
+            # Sem busca: mostra os principais aeroportos/rodoviárias logo após hubs
+            score = 15
+        elif upper_q == t_code:
+            score = 0
+        elif t_code.startswith(upper_q) and len(upper_q) >= 2:
+            score = 2
+        elif t_norm.startswith(clean_q):
+            score = 3
+        elif clean_q in t_norm:
+            score = 4
+        elif clean_q in h_norm and (t_code or is_air):
+            score = 6
+
+        if score < 90:
+            scored_results.append((
+                score,
+                LocationSuggestion(
+                    id=f"term-{t.id}",
+                    type=type_str,
+                    name=t.name,
+                    city=h_name,
+                    state=h_state,
+                    code=t_code,
+                    modal=t.modal.value,
+                    title=f"{t.name} ({t_code})" if t_code else t.name,
+                    subtitle=f"{h_name}, {h_state} • {type_desc}",
+                    highlight=t_code or h_name,
+                )
+            ))
+
+    # Ordena por relevância (score menor = melhor) e desempata por nome
+    scored_results.sort(key=lambda item: (item[0], item[1].type != "hub", item[1].title))
+    return [item[1] for item in scored_results[:limit]]
+
 
 
 # ==============================================================================

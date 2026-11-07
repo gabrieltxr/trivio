@@ -10,7 +10,7 @@ import subprocess
 import urllib.request
 from playwright.sync_api import sync_playwright
 
-WORKSPACE_DIR = r"d:\Documents\PROJETOS\Viax"
+WORKSPACE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = os.path.join(WORKSPACE_DIR, "frontend")
 ARTIFACT_DIR = r"C:\Users\Gabriel\.gemini\antigravity\brain\706ec30a-403e-4b53-8431-b5e25272966c"
 FASTAPI_PORT = 8000

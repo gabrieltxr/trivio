@@ -8,6 +8,8 @@ import pytest
 from app.collectors.base import (
     BaseCollector,
     CollectorBlockedError,
+    CollectorNotAuthorizedError,
+    RobotsDisallowedError,
     CollectorError,
     CollectorNetworkError,
     CollectorParsingError,
@@ -171,30 +173,22 @@ class MockDirectRoadCollector(BaseCollector):
         ]
 
 
-class MockBlockedRoadCollector(BaseCollector):
-    """Implementação mock que sofre bloqueio WAF e aciona Tier 2 Headless Fallback."""
-    provider_name = "mock_blocked"
+class MockDeniedRoadCollector(BaseCollector):
+    """Implementação mock cujo provedor recusa acesso automatizado (HTTP 403)."""
+    provider_name = "mock_denied"
     modal = "ROAD"
-    supports_headless_fallback = True
 
     async def fetch_quotes(self, origin_ext_id: str, dest_ext_id: str, travel_date: str) -> List[StandardizedQuote]:
-        raise CollectorBlockedError("Blocked by Cloudflare WAF")
+        raise CollectorNotAuthorizedError("HTTP 403: acesso automatizado recusado")
 
-    async def fallback_fetch_quotes(self, origin_ext_id: str, dest_ext_id: str, travel_date: str) -> List[StandardizedQuote]:
-        return [
-            StandardizedQuote(
-                origin_external_id=origin_ext_id,
-                destination_external_id=dest_ext_id,
-                modal=self.modal,
-                provider_source=self.provider_name,
-                carrier_name="Viação Salva Pelo Headless",
-                service_class="LEITO",
-                departure_time=datetime(2026, 11, 20, 22, 0),
-                arrival_time=datetime(2026, 11, 21, 6, 0),
-                duration_minutes=480,
-                base_price=180.0,
-            )
-        ]
+
+class MockRobotsBlockedCollector(BaseCollector):
+    """Implementação mock cuja URL é proibida pelo robots.txt do site."""
+    provider_name = "mock_robots"
+    modal = "ROAD"
+
+    async def fetch_quotes(self, origin_ext_id: str, dest_ext_id: str, travel_date: str) -> List[StandardizedQuote]:
+        raise RobotsDisallowedError("robots.txt proíbe /*?departureDate=")
 
 
 class MockCrashingCollector(BaseCollector):
@@ -221,16 +215,29 @@ async def test_base_collector_safe_fetch_success():
 
 
 @pytest.mark.asyncio
-async def test_base_collector_safe_fetch_triggers_tier2_fallback():
-    """Valida acionamento automático de Tier 2 quando Tier 1 sofre CollectorBlockedError."""
-    collector = MockBlockedRoadCollector()
+async def test_safe_fetch_respects_access_denial_without_workaround():
+    """Recusa explícita do provedor (403) encerra a coleta: nada de contorno."""
+    collector = MockDeniedRoadCollector()
     quotes = await collector.safe_fetch("orig_1", "dest_1", "2026-11-20")
 
-    assert len(quotes) == 1
-    assert quotes[0].carrier_name == "Viação Salva Pelo Headless"
-    stats = quotes[0].route_metadata.get("collector_stats", {})
-    assert stats["provider"] == "mock_blocked"
-    assert stats["tier"] == "tier_2_headless_fallback"
+    assert quotes == []
+    assert collector.access_denied is True
+
+
+@pytest.mark.asyncio
+async def test_safe_fetch_respects_robots_disallow():
+    """URL proibida pelo robots.txt não vira tentativa alternativa."""
+    collector = MockRobotsBlockedCollector()
+    quotes = await collector.safe_fetch("orig_1", "dest_1", "2026-11-20")
+
+    assert quotes == []
+    assert collector.access_denied is True
+
+
+def test_base_collector_has_no_headless_bypass():
+    """O contrato não deve oferecer escalonamento para navegador (evasão de WAF)."""
+    assert not hasattr(BaseCollector, "fallback_fetch_quotes")
+    assert not hasattr(BaseCollector, "supports_headless_fallback")
 
 
 @pytest.mark.asyncio

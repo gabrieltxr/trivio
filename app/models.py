@@ -135,3 +135,48 @@ class FareQuote(Base):
             f"<FareQuote(id={self.id}, carrier='{self.carrier_name}', modal='{self.modal}', "
             f"price={self.total_effective_price}, score={self.trivio_score})>"
         )
+
+
+class RouteMonthlyFare(Base):
+    """Preço médio ponderado de uma rota, classe e mês de viagem, num mês de emissão.
+
+    É a série que alimenta o Termômetro: os percentis são calculados sobre os meses
+    de viagem de cada rota, e só há classificação com um mínimo de meses. Fonte:
+    dados abertos da ANTT (Monitriip).
+    """
+    __tablename__ = "route_monthly_fares"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    route_key = Column(String(160), nullable=False, index=True)
+    origin_city = Column(String(120), nullable=False)
+    origin_state = Column(String(2))
+    destination_city = Column(String(120), nullable=False)
+    destination_state = Column(String(2))
+
+    modal = Column(SQLEnum(ModalType), nullable=False, default=ModalType.ROAD, index=True)
+    service_class = Column(String(50), nullable=False)
+
+    trip_month = Column(String(7), nullable=False, index=True)       # 'AAAA-MM'
+    emission_period = Column(String(7), nullable=False, index=True)  # 'AAAA-MM'
+    source = Column(String(50), nullable=False, default="antt_monitriip")
+
+    sample_size = Column(Integer, nullable=False)  # bilhetes
+    mean_brl = Column(Float, nullable=False)
+    min_brl = Column(Float, nullable=False)
+    max_brl = Column(Float, nullable=False)
+
+    imported_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "route_key", "service_class", "trip_month", "emission_period", "source",
+            name="uq_route_monthly_fare",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<RouteMonthlyFare(route='{self.route_key}', class='{self.service_class}', "
+            f"viagem={self.trip_month}, emissao={self.emission_period}, n={self.sample_size})>"
+        )
