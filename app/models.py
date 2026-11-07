@@ -140,9 +140,14 @@ class FareQuote(Base):
 class RouteMonthlyFare(Base):
     """Preço médio ponderado de uma rota, classe e mês de viagem, num mês de emissão.
 
-    É a série que alimenta o Termômetro: os percentis são calculados sobre os meses
-    de viagem de cada rota, e só há classificação com um mínimo de meses. Fonte:
-    dados abertos da ANTT (Monitriip).
+    É a série que alimenta o Termômetro. Duas fontes oficiais:
+
+    - ANTT/Monitriip (ROAD): rota entre municípios; os percentis são calculados
+      sobre as médias dos meses de viagem.
+    - ANAC/tarifas domésticas (AIR): rota entre aeroportos ICAO (origin_city e
+      destination_city guardam o código, ex: 'SBSP'); trip_month e emission_period
+      são o mesmo mês de VENDA; e os percentis ponderados por assento vêm prontos
+      em p10_brl..p90_brl, porque a dispersão dentro do mês é o que importa.
     """
     __tablename__ = "route_monthly_fares"
 
@@ -165,6 +170,13 @@ class RouteMonthlyFare(Base):
     mean_brl = Column(Float, nullable=False)
     min_brl = Column(Float, nullable=False)
     max_brl = Column(Float, nullable=False)
+
+    # Percentis ponderados pela amostra (assentos, na ANAC). Nulos na série da ANTT.
+    p10_brl = Column(Float, nullable=True)
+    p25_brl = Column(Float, nullable=True)
+    p50_brl = Column(Float, nullable=True)
+    p75_brl = Column(Float, nullable=True)
+    p90_brl = Column(Float, nullable=True)
 
     imported_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 

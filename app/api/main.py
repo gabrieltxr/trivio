@@ -36,7 +36,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy import text
 
 from app.config import settings
-from app.database import engine, Base
+from app.database import engine, Base, ensure_schema
 
 logger = logging.getLogger("trivio.api")
 
@@ -81,6 +81,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         logger.info("Conexão com banco de dados validada com sucesso.")
+        ensure_schema(engine)
     except Exception as exc:
         logger.error(f"Erro ao conectar ao banco de dados durante startup: {exc}")
 

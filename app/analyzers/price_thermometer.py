@@ -17,6 +17,8 @@ import polars as pl
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.collectors.anac.airfares import ANAC_ALL_CLASSES, ANAC_SOURCE
+from app.collectors.anac.airports import to_icao
 from app.collectors.antt.monitriip import build_route_key
 from app.models import FareQuote, ModalType, RouteMonthlyFare
 
@@ -37,7 +39,7 @@ class PriceThermometerResult:
     sample_size: int                         # Quantidade de amostras consideradas
     difference_percentage: Optional[float]  # % de variação vs mediana (+15% ou -24%)
     recommendation: str                      # Recomendação amigável em português
-    source: str = "coletas_trivio"          # Origem da série: 'antt_monitriip' ou 'coletas_trivio'
+    source: str = "coletas_trivio"          # 'antt_monitriip', 'anac_tarifas_domesticas' ou 'coletas_trivio'
     reference_period: Optional[str] = None  # Janela da série oficial (ex: '2024-09')
 
     def to_dict(self) -> Dict[str, Any]:
@@ -258,6 +260,11 @@ def fetch_historical_prices_from_db(
         return []
 
 
+def _thousands(value: int) -> str:
+    """Inteiro com ponto de milhar, no padrão brasileiro: 135400 -> '135.400'."""
+    return f"{int(value):,}".replace(",", ".")
+
+
 def _ticket_price(quote: Any) -> float:
     """Preço do bilhete em si (tarifa + taxas), sem transfer urbano nem bagagem.
 
@@ -272,15 +279,25 @@ def _ticket_price(quote: Any) -> float:
 
 
 def _evaluate_with_official_statistics(quote: Any, db: Session) -> Optional[PriceThermometerResult]:
-    """Classifica a cotação contra a série mensal oficial da rota e classe.
+    """Classifica a cotação contra a série oficial do seu modal.
 
-    Devolve None, e o termômetro recorre ao histórico próprio, quando a rota não é
-    rodoviária, não tem município de origem e destino, não tem classe, ou tem menos
-    de MIN_OFFICIAL_MONTHS meses de viagem.
+    ROAD usa a ANTT (Monitriip); AIR usa a ANAC (tarifas domésticas). Devolve None,
+    e o termômetro recorre ao histórico próprio, quando não há série suficiente.
     """
     modal = str(_get_val(quote, "modal", "")).upper()
-    if "ROAD" not in modal:   # A série da ANTT cobre o rodoviário interestadual
-        return None
+    if modal == "AIR":
+        return _evaluate_with_anac_statistics(quote, db)
+    if "ROAD" in modal:   # inclui rotas híbridas, como antes
+        return _evaluate_with_antt_statistics(quote, db)
+    return None
+
+
+def _evaluate_with_antt_statistics(quote: Any, db: Session) -> Optional[PriceThermometerResult]:
+    """Classifica a cotação rodoviária contra a série mensal da ANTT da rota e classe.
+
+    Devolve None quando a rota não tem município de origem e destino, não tem
+    classe, ou tem menos de MIN_OFFICIAL_MONTHS meses de viagem.
+    """
 
     meta = _get_val(quote, "route_metadata", {}) or {}
     if not isinstance(meta, dict):
@@ -316,7 +333,198 @@ def _evaluate_with_official_statistics(quote: Any, db: Session) -> Optional[Pric
     result.reference_period = f"{series[0][0]} a {series[-1][0]}"
     result.recommendation = (
         f"{result.recommendation} Base: {len(series)} meses de viagem, "
-        f"{tickets:,} bilhetes (ANTT).".replace(",", ".")
+        f"{_thousands(tickets)} bilhetes (ANTT)."
+    )
+    return result
+
+
+# ==============================================================================
+# Série mensal oficial da ANAC (aéreo): percentis ponderados por assento
+# ==============================================================================
+
+ANAC_WINDOW_MONTHS = 12
+"""Quantos meses de venda mais recentes da rota entram na régua aérea."""
+
+MIN_ANAC_MONTHS = 3
+"""Mínimo de meses com vendas na janela para a régua aérea classificar.
+
+Bem abaixo dos 6 meses da ANTT porque aqui cada mês já traz a distribuição
+completa das tarifas vendidas, não uma única média."""
+
+MIN_ANAC_SEATS = 300
+"""Mínimo de assentos vendidos na janela. Rotas mais finas oscilam demais."""
+
+
+@dataclass
+class AirFareBand:
+    """Percentis ponderados de uma rota aérea, combinados sobre a janela de meses."""
+
+    months: List[str]
+    seats: int
+    min_brl: float
+    p10_brl: float
+    p25_brl: float
+    p50_brl: float
+    p75_brl: float
+    p90_brl: float
+    max_brl: float
+
+    def points(self) -> List[Tuple[float, float]]:
+        """Pares (tarifa, percentil) para interpolar a posição de um preço."""
+        return [
+            (self.min_brl, 0.0), (self.p10_brl, 10.0), (self.p25_brl, 25.0), (self.p50_brl, 50.0),
+            (self.p75_brl, 75.0), (self.p90_brl, 90.0), (self.max_brl, 100.0),
+        ]
+
+
+def _quote_airport_codes(quote: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Códigos ICAO de origem e destino da cotação, a partir do IATA que ela carrega."""
+    meta = _get_val(quote, "route_metadata", {}) or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    origin_candidates = (
+        meta.get("origin_iata"), _get_val(quote, "canonical_origin_id"), _get_val(quote, "origin_external_id"),
+    )
+    dest_candidates = (
+        meta.get("destination_iata"), _get_val(quote, "canonical_destination_id"),
+        _get_val(quote, "destination_external_id"),
+    )
+    origin = next((icao for icao in (to_icao(c) for c in origin_candidates) if icao), None)
+    dest = next((icao for icao in (to_icao(c) for c in dest_candidates) if icao), None)
+    return origin, dest
+
+
+def fetch_air_fare_band(
+    db: Session,
+    origin_icao: str,
+    destination_icao: str,
+    window_months: int = ANAC_WINDOW_MONTHS,
+) -> Optional[AirFareBand]:
+    """Combina os percentis dos últimos `window_months` meses de venda da rota.
+
+    Cada percentil é a média dos percentis mensais ponderada pelos assentos do
+    mês. É uma aproximação do percentil da janela inteira (os microdados não são
+    guardados), boa o suficiente para uma régua de caro/barato.
+    """
+    route_key = build_route_key(origin_icao, None, destination_icao, None)
+    stmt = select(
+        RouteMonthlyFare.trip_month,
+        RouteMonthlyFare.sample_size,
+        RouteMonthlyFare.min_brl,
+        RouteMonthlyFare.p10_brl,
+        RouteMonthlyFare.p25_brl,
+        RouteMonthlyFare.p50_brl,
+        RouteMonthlyFare.p75_brl,
+        RouteMonthlyFare.p90_brl,
+        RouteMonthlyFare.max_brl,
+    ).where(
+        RouteMonthlyFare.route_key == route_key,
+        RouteMonthlyFare.modal == ModalType.AIR,
+        RouteMonthlyFare.source == ANAC_SOURCE,
+        RouteMonthlyFare.service_class == ANAC_ALL_CLASSES,
+        RouteMonthlyFare.p50_brl.is_not(None),
+    ).order_by(RouteMonthlyFare.trip_month.desc()).limit(window_months)
+
+    try:
+        rows = db.execute(stmt).all()
+    except Exception as exc:
+        logger.warning(f"Falha ao consultar a série aérea da ANAC ({type(exc).__name__}: {exc}).")
+        return None
+
+    rows = [row for row in rows if row.sample_size and row.sample_size > 0]
+    if not rows:
+        return None
+
+    total = float(sum(row.sample_size for row in rows))
+
+    def weighted(attr: str) -> float:
+        return round(sum(float(getattr(row, attr)) * row.sample_size for row in rows) / total, 2)
+
+    return AirFareBand(
+        months=sorted(row.trip_month for row in rows),
+        seats=int(total),
+        min_brl=weighted("min_brl"),
+        p10_brl=weighted("p10_brl"),
+        p25_brl=weighted("p25_brl"),
+        p50_brl=weighted("p50_brl"),
+        p75_brl=weighted("p75_brl"),
+        p90_brl=weighted("p90_brl"),
+        max_brl=weighted("max_brl"),
+    )
+
+
+def _interpolate_percentile(price: float, points: List[Tuple[float, float]]) -> int:
+    """Posição aproximada (1 a 99) de um preço na distribuição, por interpolação linear."""
+    if price <= points[0][0]:
+        return 1
+    for (low_price, low_pct), (high_price, high_pct) in zip(points, points[1:]):
+        if price <= high_price:
+            if high_price <= low_price:
+                return max(1, min(99, int(round(high_pct))))
+            share = (price - low_price) / (high_price - low_price)
+            return max(1, min(99, int(round(low_pct + share * (high_pct - low_pct)))))
+    return 99
+
+
+def evaluate_against_air_band(price: float, band: AirFareBand) -> PriceThermometerResult:
+    """Classifica uma tarifa base contra a faixa de preços vendidos da rota."""
+    percentile = _interpolate_percentile(price, band.points())
+    median = band.p50_brl
+    diff_pct = round(((price - median) / median) * 100.0, 1) if median > 0 else 0.0
+
+    if price <= band.p25_brl:
+        status = "LOW"
+        rec = (
+            f"Tarifa {abs(diff_pct):.0f}% abaixo da mediana do que se pagou nesta rota "
+            f"(R$ {median:.2f}). Mais barata que {100 - percentile}% dos assentos vendidos: ótimo momento."
+        )
+    elif price > band.p75_brl:
+        status = "HIGH"
+        rec = (
+            f"Tarifa {diff_pct:.0f}% acima da mediana do que se pagou nesta rota (R$ {median:.2f}). "
+            "Se tiver flexibilidade, considere outras datas, aeroportos ou modais."
+        )
+    else:
+        status = "MEDIUM"
+        rec = f"Tarifa dentro da faixa usual desta rota (mediana do que se pagou: R$ {median:.2f})."
+
+    return PriceThermometerResult(
+        status=status,
+        percentile=percentile,
+        historical_median_brl=median,
+        p25_brl=band.p25_brl,
+        p75_brl=band.p75_brl,
+        sample_size=band.seats,
+        difference_percentage=diff_pct,
+        recommendation=rec,
+        source=ANAC_SOURCE,
+        reference_period=f"{band.months[0]} a {band.months[-1]}",
+    )
+
+
+def _evaluate_with_anac_statistics(quote: Any, db: Session) -> Optional[PriceThermometerResult]:
+    """Classifica a cotação aérea contra as tarifas vendidas na rota (ANAC).
+
+    Compara só a tarifa base: o valor registrado na ANAC não inclui taxa de
+    embarque nem bagagem. Devolve None quando o aeroporto não está no de-para,
+    a cotação não tem tarifa base, ou a rota não tem meses e assentos suficientes.
+    """
+    origin_icao, dest_icao = _quote_airport_codes(quote)
+    if not origin_icao or not dest_icao:
+        return None
+
+    base_price = float(_get_val(quote, "base_price", 0.0) or 0.0)
+    if base_price <= 0.0:
+        return None
+
+    band = fetch_air_fare_band(db, origin_icao, dest_icao)
+    if band is None or len(band.months) < MIN_ANAC_MONTHS or band.seats < MIN_ANAC_SEATS:
+        return None
+
+    result = evaluate_against_air_band(base_price, band)
+    result.recommendation = (
+        f"{result.recommendation} Base: {len(band.months)} meses de vendas, "
+        f"{_thousands(band.seats)} assentos (ANAC; tarifa sem taxa de embarque)."
     )
     return result
 
@@ -345,8 +553,8 @@ def enrich_quote_with_thermometer(
     """Enriquece uma cotação individual com a análise do termômetro de preço."""
     price = float(_get_val(quote, "total_effective_price", 0.0) or _get_val(quote, "base_price", 0.0) or 0.0)
 
-    # 1. Série oficial da ANTT, quando houver (bilhetes realmente vendidos no corredor).
-    #    Tem prioridade sobre o histórico próprio: amostra muito maior e preço transacionado.
+    # 1. Série oficial do modal, quando houver (ANTT no rodoviário, ANAC no aéreo):
+    #    bilhetes realmente vendidos. Tem prioridade sobre o histórico próprio.
     if historical_prices is None and db is not None:
         official = _evaluate_with_official_statistics(quote, db)
         if official is not None:
@@ -393,7 +601,7 @@ def enrich_quotes_batch_with_thermometer(
     corridor_cache: Dict[Tuple[int, int, str], List[float]] = {}
 
     for q in quotes:
-        # 1. Série oficial da ANTT tem prioridade (amostra maior, preço transacionado)
+        # 1. Série oficial do modal tem prioridade (ANTT/ANAC: preço transacionado)
         if db is not None:
             official = _evaluate_with_official_statistics(q, db)
             if official is not None:
