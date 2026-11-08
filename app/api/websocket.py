@@ -33,6 +33,7 @@ from app.analyzers.trivio_scorer import generate_hacker_fares, score_and_rank_qu
 from app.cache.deduplicator import deduplicate_quotes
 from app.services.air_quotes import AirProviderUnavailableError, get_air_quote_service
 from app.collectors.base import StandardizedQuote
+from app.analyzers.road_reference import build_road_references
 from app.collectors.road.clickbus import ClickBusCollector, CLICKBUS_SLUG_MAP
 from app.config import settings
 from app.database import SessionLocal
@@ -52,6 +53,11 @@ SIMULATION_NOTICE = (
     "real de mercado nem está disponível para compra."
 )
 MAX_INTERLINE_HUBS = 2
+
+# Ônibus com preço real está DESLIGADO: o ClickBus recusa o acesso automatizado (403) e ainda
+# não há fonte autorizada. Enquanto isso, o ônibus aparece só como referência histórica da ANTT
+# (evento ROAD_REFERENCE), fora do ranking. Ligar de novo exige uma fonte autorizada.
+ROAD_OFFERS_ENABLED = False
 
 
 # ==============================================================================
@@ -582,21 +588,24 @@ async def _run_search(
         "destination": destination,
         "travel_date": travel_date,
         "return_date": return_date,
-        "providers": ["clickbus", get_air_quote_service().provider_name, "virtual_interlining"],
+        "providers": (
+            (["clickbus"] if ROAD_OFFERS_ENABLED else [])
+            + [get_air_quote_service().provider_name]
+            + (["virtual_interlining"] if ROAD_OFFERS_ENABLED else [])
+        ),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 
-    road_collector = ClickBusCollector()
     air_collector = get_air_quote_service()
 
-    orig_clickbus = _clickbus_external_id(db, orig_road_term, origin)
-    dest_clickbus = _clickbus_external_id(db, dest_road_term, destination)
+    orig_clickbus = _clickbus_external_id(db, orig_road_term, origin) if ROAD_OFFERS_ENABLED else ""
+    dest_clickbus = _clickbus_external_id(db, dest_road_term, destination) if ROAD_OFFERS_ENABLED else ""
     orig_air_code = orig_air_term.official_code if orig_air_term else origin.upper()
     dest_air_code = dest_air_term.official_code if dest_air_term else destination.upper()
 
     # Hubs intermediários para Virtual Interlining (só faz sentido se o destino tiver aeroporto)
     interline_hubs: List[Tuple[Hub, Terminal, Terminal]] = []
-    if enable_interlining and dest_air_term:
+    if ROAD_OFFERS_ENABLED and enable_interlining and dest_air_term:
         interline_hubs = _find_interline_hubs(orig_hub, dest_hub, db, radius_km)
 
     all_outbound_quotes: List[StandardizedQuote] = []
@@ -606,15 +615,17 @@ async def _run_search(
     # Tarefas assíncronas concorrentes de Ida
     tasks = [
         asyncio.create_task(
-            _fetch_provider_batch("clickbus", road_collector, orig_clickbus, dest_clickbus, travel_date)
-        ),
-        asyncio.create_task(
             _fetch_provider_batch(air_collector.provider_name, air_collector, orig_air_code, dest_air_code, travel_date)
         ),
     ]
+    if ROAD_OFFERS_ENABLED:
+        road_collector = ClickBusCollector()
+        tasks.insert(0, asyncio.create_task(
+            _fetch_provider_batch("clickbus", road_collector, orig_clickbus, dest_clickbus, travel_date)
+        ))
 
     # Se houver data de volta, adiciona tarefas concorrentes de Volta para Hacker Fares
-    if return_date:
+    if return_date and ROAD_OFFERS_ENABLED:
         tasks.append(asyncio.create_task(
             _fetch_provider_batch("clickbus_return", road_collector, dest_clickbus, orig_clickbus, return_date)
         ))
@@ -678,6 +689,30 @@ async def _run_search(
                 "quotes": [q.to_dict() for q in processed_quotes],
                 "elapsed_ms": result["elapsed_ms"],
             })
+
+        # Referência histórica rodoviária (ANTT): não entra no ranking, só informa a faixa de preço.
+        if orig_hub and dest_hub:
+            try:
+                references = build_road_references(
+                    db,
+                    origin_city=orig_hub.name,
+                    origin_state=orig_hub.state,
+                    destination_city=dest_hub.name,
+                    destination_state=dest_hub.state,
+                    travel_date=travel_date,
+                )
+                if references:
+                    await websocket.send_json({
+                        "event": "ROAD_REFERENCE",
+                        "session_id": session_id,
+                        "source": "antt_monitriip",
+                        "reference_only": True,
+                        "origin": origin,
+                        "destination": destination,
+                        "references": references,
+                    })
+            except Exception as ref_err:
+                logger.warning(f"Falha ao montar referência rodoviária ANTT: {ref_err}")
 
         # Modo simulação: nenhum coletor real retornou dados (ex: WAF 403 ou sem credenciais no .env)
         simulation_mode = not all_outbound_quotes

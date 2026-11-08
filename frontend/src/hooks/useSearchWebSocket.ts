@@ -13,6 +13,19 @@ export interface SearchCompletedStats {
   timestamp: string;
 }
 
+/** Faixa histórica rodoviária da ANTT por classe. Referência, não é oferta de compra. */
+export interface RoadReference {
+  service_class: string;
+  reference_period: string;
+  months: number;
+  tickets: number;
+  p25_brl: number;
+  median_brl: number;
+  p75_brl: number;
+  travel_month_mean_brl: number | null;
+  travel_month: string | null;
+}
+
 /** Aviso de um provedor que não respondeu à busca (ex: aéreo sem chave ou sem orçamento). */
 export interface ProviderNotice {
   provider: string;
@@ -28,6 +41,7 @@ export interface UseSearchWebSocketReturn {
   completedStats: SearchCompletedStats | null;
   error: string | null;
   providerNotices: ProviderNotice[];
+  roadReferences: RoadReference[];
   activeProviders: string[];
   startSearch: (params: SearchParams) => void;
   cancelSearch: () => void;
@@ -46,6 +60,7 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
   const [error, setError] = useState<string | null>(null);
   const [activeProviders, setActiveProviders] = useState<string[]>([]);
   const [providerNotices, setProviderNotices] = useState<ProviderNotice[]>([]);
+  const [roadReferences, setRoadReferences] = useState<RoadReference[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -69,6 +84,7 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
     setQuotes([]);
     setHackerFares([]);
     setProviderNotices([]);
+    setRoadReferences([]);
     setCompletedStats(null);
     setError(null);
     setActiveProviders([]);
@@ -146,6 +162,11 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
           // Parâmetros inválidos ou localidade não reconhecida pelo backend
           setIsSearching(false);
           setError(data.message || "Não foi possível iniciar a busca.");
+          break;
+        }
+
+        case "ROAD_REFERENCE": {
+          setRoadReferences(data.references || []);
           break;
         }
 
@@ -286,6 +307,7 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
     completedStats,
     error,
     providerNotices,
+    roadReferences,
     activeProviders,
     startSearch,
     cancelSearch,

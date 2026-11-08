@@ -50,8 +50,10 @@ def test_websocket_ping_pong(client):
 
 @patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
 @patch("app.services.air_quotes.AirQuoteService.get_quotes")
-def test_websocket_search_orchestration_flow(mock_air, mock_road, client):
+def test_websocket_search_orchestration_flow(mock_air, mock_road, client, monkeypatch):
     """Valida fluxo completo: SEARCH_STARTED -> QUOTE_BATCH (Road & Air) -> SEARCH_COMPLETED."""
+    # Este teste cobre o caminho com ônibus ligado (fonte autorizada, hoje em hold).
+    monkeypatch.setattr("app.api.websocket.ROAD_OFFERS_ENABLED", True)
     road_q = _create_dummy_quote("ROAD", "clickbus", "1001", 120.0)
     air_q = _create_dummy_quote("AIR", "ignav", "LATAM", 350.0)
 
@@ -141,8 +143,10 @@ def test_websocket_reports_air_not_queried_with_reason(mock_air, mock_road, clie
 
 @patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
 @patch("app.services.air_quotes.AirQuoteService.get_quotes")
-def test_websocket_provider_error_isolation(mock_air, mock_road, client):
+def test_websocket_provider_error_isolation(mock_air, mock_road, client, monkeypatch):
     """Valida padrão Bulkhead: erro em um coletor gera PROVIDER_ERROR sem derrubar o outro."""
+    # Este teste cobre o caminho com ônibus ligado (fonte autorizada, hoje em hold).
+    monkeypatch.setattr("app.api.websocket.ROAD_OFFERS_ENABLED", True)
     mock_road.return_value = [_create_dummy_quote("ROAD", "clickbus", "Cometa", 100.0)]
     mock_air.side_effect = RuntimeError("Ignav API Timeout Simulada")
 
@@ -170,12 +174,14 @@ def test_websocket_provider_error_isolation(mock_air, mock_road, client):
 
 @patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
 @patch("app.services.air_quotes.AirQuoteService.get_quotes")
-def test_websocket_simulation_mode_is_labeled_and_not_persisted(mock_air, mock_road, client):
+def test_websocket_simulation_mode_is_labeled_and_not_persisted(mock_air, mock_road, client, monkeypatch):
     """Sem dados reais: estimativas rotuladas, sem operadoras reais, com transfer e sem persistência.
 
     Também valida que o Virtual Interlining usa pernas Origem -> Hub e Hub -> Destino
     (Rio Grande -> ônibus -> Pelotas -> voo -> São Paulo).
     """
+    # Este teste cobre o caminho com ônibus ligado (fonte autorizada, hoje em hold).
+    monkeypatch.setattr("app.api.websocket.ROAD_OFFERS_ENABLED", True)
     from app.database import SessionLocal
     from app.models import FareQuote, Hub
 
@@ -276,8 +282,10 @@ def test_interline_flight_is_not_paid_for_without_bus_leg(mock_air, mock_road, c
 
 @patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
 @patch("app.services.air_quotes.AirQuoteService.get_quotes")
-def test_websocket_reports_refused_site_as_access_denied(mock_air, mock_road, client):
+def test_websocket_reports_refused_site_as_access_denied(mock_air, mock_road, client, monkeypatch):
     """Site que recusa o acesso (403) não pode aparecer como 'zero resultados' sem explicação."""
+    # Este teste cobre o caminho com ônibus ligado (fonte autorizada, hoje em hold).
+    monkeypatch.setattr("app.api.websocket.ROAD_OFFERS_ENABLED", True)
     mock_road.return_value = []
     mock_air.return_value = []
 
@@ -296,3 +304,27 @@ def test_websocket_reports_refused_site_as_access_denied(mock_air, mock_road, cl
 
     [denied] = [e for e in events if e["event"] == "PROVIDER_ERROR" and e["provider"] == "clickbus"]
     assert denied["reason"] == "access_denied"
+
+
+@patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
+@patch("app.services.air_quotes.AirQuoteService.get_quotes")
+def test_road_offers_off_by_default_never_calls_bus_source(mock_air, mock_road, client):
+    """Sem fonte de ônibus autorizada, o ClickBus não é consultado e nenhum ônibus entra no ranking."""
+    mock_air.return_value = [_create_dummy_quote("AIR", "ignav", "LATAM", 350.0)]
+
+    events = []
+    with client.websocket_connect("/ws/search") as ws:
+        ws.send_text(json.dumps({
+            "action": "start_search", "origin": "SAO", "destination": "RIO", "date": "2026-11-20",
+        }))
+        while True:
+            event = ws.receive_json()
+            events.append(event)
+            if event["event"] == "SEARCH_COMPLETED":
+                break
+
+    mock_road.assert_not_called()
+    assert "clickbus" not in [e.get("provider") for e in events]
+    for event in events:
+        if event["event"] == "QUOTE_BATCH":
+            assert all(q["modal"] != "ROAD" for q in event["quotes"])

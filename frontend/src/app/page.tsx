@@ -27,6 +27,15 @@ type ModalFilter = "ALL" | "AIR" | "ROAD" | "HYBRID";
 
 const NAMES: Record<string, string> = { clickbus: "A ClickBus", ignav: "O provedor aéreo" };
 
+const ROAD_CLASS_LABELS: Record<string, string> = {
+  CONVENCIONAL: "Convencional",
+  EXECUTIVO: "Executivo",
+  SEMI_LEITO: "Semi-leito",
+  LEITO: "Leito",
+};
+
+const brl = (value: number) => `R$ ${value.toFixed(2).replace(".", ",")}`;
+
 /** Texto do aviso exibido quando um provedor não respondeu, conforme o motivo da API. */
 function providerNoticeText(notice: ProviderNotice): string {
   const isAir = notice.provider.startsWith("ignav");
@@ -57,6 +66,7 @@ export default function Home() {
     completedStats,
     error,
     providerNotices,
+    roadReferences,
     activeProviders,
     startSearch,
     cancelSearch,
@@ -287,6 +297,40 @@ export default function Home() {
         {error && (
           <div className="mb-6 p-4 rounded-2xl bg-red-50 border border-red-200 text-red-800 text-xs font-semibold">
             {error}
+          </div>
+        )}
+
+        {/* Referência histórica rodoviária (ANTT): fica fora do ranking, nunca é uma oferta */}
+        {roadReferences.length > 0 && (
+          <div className="mb-6 p-4 rounded-2xl bg-slate-50 border border-slate-200">
+            <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-700 mb-1">
+              Referência histórica de ônibus (ANTT)
+            </h3>
+            <p className="text-[11px] text-slate-500 mb-3">
+              Faixa do que foi vendido nesta rota ({roadReferences[0].reference_period}). Não é uma passagem:
+              não tem horário, empresa nem compra. Não entra na comparação.
+            </p>
+            <div className="space-y-2">
+              {roadReferences.map((ref) => (
+                <div
+                  key={ref.service_class}
+                  className="flex flex-wrap items-baseline justify-between gap-2 text-xs"
+                >
+                  <span className="font-bold text-slate-800">
+                    {ROAD_CLASS_LABELS[ref.service_class] ?? ref.service_class}
+                  </span>
+                  <span className="text-slate-600">
+                    costuma ficar entre <strong>{brl(ref.p25_brl)}</strong> e <strong>{brl(ref.p75_brl)}</strong>
+                    {" "}(mediana {brl(ref.median_brl)})
+                  </span>
+                  {ref.travel_month_mean_brl !== null && (
+                    <span className="text-slate-500">
+                      média em {ref.travel_month}: {brl(ref.travel_month_mean_brl)}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
