@@ -152,6 +152,11 @@ Motivos de falha informados ao frontend, em vez de uma lista vazia com aparênci
 requests bem-sucedidas custam US$ 2, cobrados por mês. Um cartão de crédito precisa estar
 cadastrado na conta para que as requests continuem. Sem ele, a API responde HTTP 402.
 
+**Quantas requests cada busca gasta.** Uma consulta cobre um sentido, então a busca de ida e volta
+gasta **2 requests** (uma para a ida e uma para a volta). Uma busca só de ida gasta 1. Buscas
+repetidas na mesma janela de cache não gastam nada. O link de compra custa 1 request por clique.
+Com o teto padrão de 800 por mês, cabem cerca de 400 buscas de ida e volta novas.
+
 **Preço e taxas.** O Ignav devolve o total do bilhete, com taxas. A régua da ANAC mede só a tarifa,
 então o Trivio separa uma taxa de embarque estimada (`DEFAULT_DOMESTIC_BOARDING_FEE_BRL`, padrão
 R$ 40) para comparar. Os valores por aeroporto ficam em
