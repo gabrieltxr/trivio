@@ -19,12 +19,31 @@ import {
 } from "lucide-react";
 import { FareQuote, PriceThermometerData } from "@/types";
 
+type SortCriterion = "TRIVIO_SCORE" | "PRICE_ASC" | "DURATION_ASC";
+
 interface QuoteCardProps {
   quote: FareQuote;
   isBestScore?: boolean;
+  /** Critério da ordenação ativa: destaca o valor que está ordenando a lista. */
+  sortBy?: SortCriterion;
 }
 
-export default function QuoteCard({ quote, isBestScore = false }: QuoteCardProps) {
+const BEST_BANNER: Record<SortCriterion, { title: string; subtitle: string }> = {
+  TRIVIO_SCORE: {
+    title: "Melhor Escolha Trivio (Menor Índice de Agonia)",
+    subtitle: "Custo Real + Tempo Otimizado",
+  },
+  PRICE_ASC: {
+    title: "Menor Custo Efetivo da Lista",
+    subtitle: "Ordenado por preço",
+  },
+  DURATION_ASC: {
+    title: "Mais Rápido Porta a Porta",
+    subtitle: "Ordenado por tempo",
+  },
+};
+
+export default function QuoteCard({ quote, isBestScore = false, sortBy = "TRIVIO_SCORE" }: QuoteCardProps) {
   const [showDetails, setShowDetails] = useState(false);
 
   const isAir = quote.modal === "AIR";
@@ -119,10 +138,10 @@ export default function QuoteCard({ quote, isBestScore = false }: QuoteCardProps
         <div className="bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-[11px] font-black uppercase tracking-wider py-1 px-4 rounded-t-2xl flex items-center justify-between">
           <span className="flex items-center gap-1.5">
             <Sparkles className="w-3.5 h-3.5" />
-            Melhor Escolha Trivio (Menor Índice de Agonia)
+            {BEST_BANNER[sortBy].title}
           </span>
           <span className="text-emerald-100 font-semibold text-[10px]">
-            Custo Real + Tempo Otimizado
+            {BEST_BANNER[sortBy].subtitle}
           </span>
         </div>
       )}
@@ -211,7 +230,11 @@ export default function QuoteCard({ quote, isBestScore = false }: QuoteCardProps
 
               {/* Indicador de Rota e Duração */}
               <div className="sm:col-span-6 flex flex-col items-center justify-center text-center px-2">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-600 mb-1">
+                <div
+                  className={`flex items-center gap-1.5 text-xs font-bold text-slate-600 mb-1 rounded-lg px-2 py-0.5 ${
+                    sortBy === "DURATION_ASC" ? "bg-cyan-50 ring-1 ring-cyan-300 text-cyan-900" : ""
+                  }`}
+                >
                   <Clock className="w-3.5 h-3.5 text-cyan-600" />
                   <span>{formatDuration(quote.duration_minutes)}</span>
                   <span className="text-slate-400 font-normal">
@@ -256,7 +279,11 @@ export default function QuoteCard({ quote, isBestScore = false }: QuoteCardProps
           {/* Lado Direito: Custo Efetivo Real e Ação */}
           <div className="lg:border-l lg:border-slate-100 lg:pl-6 flex flex-row lg:flex-col items-center lg:items-end justify-between gap-4 min-w-[200px]">
             
-            <div className="text-left lg:text-right">
+            <div
+              className={`text-left lg:text-right rounded-xl px-2 py-1 ${
+                sortBy === "PRICE_ASC" ? "bg-cyan-50 ring-1 ring-cyan-300" : ""
+              }`}
+            >
               <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
                 Custo Efetivo Real
               </span>

@@ -13,6 +13,13 @@ export interface SearchCompletedStats {
   timestamp: string;
 }
 
+/** Aviso de um provedor que não respondeu à busca (ex: aéreo sem chave ou sem orçamento). */
+export interface ProviderNotice {
+  provider: string;
+  reason: string | null;
+  message: string;
+}
+
 export interface UseSearchWebSocketReturn {
   isSearching: boolean;
   isConnected: boolean;
@@ -20,6 +27,7 @@ export interface UseSearchWebSocketReturn {
   hackerFares: HackerFareCombination[];
   completedStats: SearchCompletedStats | null;
   error: string | null;
+  providerNotices: ProviderNotice[];
   activeProviders: string[];
   startSearch: (params: SearchParams) => void;
   cancelSearch: () => void;
@@ -37,6 +45,7 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
   const [completedStats, setCompletedStats] = useState<SearchCompletedStats | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeProviders, setActiveProviders] = useState<string[]>([]);
+  const [providerNotices, setProviderNotices] = useState<ProviderNotice[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -59,6 +68,7 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
   const clearResults = useCallback(() => {
     setQuotes([]);
     setHackerFares([]);
+    setProviderNotices([]);
     setCompletedStats(null);
     setError(null);
     setActiveProviders([]);
@@ -140,8 +150,18 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
         }
 
         case "PROVIDER_ERROR": {
-          // Erro pontual de um provedor (ex: timeout ou orçamento do aéreo esgotado) não derruba a busca
+          // Erro pontual de um provedor não derruba a busca; fica registrado para a interface avisar
           console.warn(`[Trivio WS] Aviso do provedor ${data.provider}:`, data.error);
+          const notice: ProviderNotice = {
+            provider: String(data.provider ?? ""),
+            reason: data.reason ?? null,
+            message: String(data.error ?? ""),
+          };
+          setProviderNotices((prev) => [
+            // Ida e volta geram dois avisos iguais: mantém um por provedor e motivo
+            ...prev.filter((n) => !(n.provider === notice.provider && n.reason === notice.reason)),
+            notice,
+          ]);
           break;
         }
 
@@ -265,6 +285,7 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
     hackerFares,
     completedStats,
     error,
+    providerNotices,
     activeProviders,
     startSearch,
     cancelSearch,

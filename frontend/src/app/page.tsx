@@ -8,7 +8,7 @@ import TrustPillars from "@/components/TrustPillars";
 import QuoteCard from "@/components/QuoteCard";
 import HackerFareCard from "@/components/HackerFareCard";
 import SkeletonCard from "@/components/SkeletonCard";
-import { useSearchWebSocket } from "@/hooks/useSearchWebSocket";
+import { useSearchWebSocket, ProviderNotice } from "@/hooks/useSearchWebSocket";
 import { SearchParams } from "@/types";
 import {
   Sparkles,
@@ -25,6 +25,22 @@ import {
 type SortOption = "TRIVIO_SCORE" | "PRICE_ASC" | "DURATION_ASC";
 type ModalFilter = "ALL" | "AIR" | "ROAD" | "HYBRID";
 
+/** Texto do aviso exibido quando um provedor não respondeu, conforme o motivo da API. */
+function providerNoticeText(notice: ProviderNotice): string {
+  const isAir = notice.provider.startsWith("ignav");
+  const name = isAir ? "Preços aéreos ao vivo" : "Esta fonte";
+  switch (notice.reason) {
+    case "not_configured":
+      return `${name} estão indisponíveis: a chave de acesso não está configurada no servidor. Os resultados abaixo não incluem voos ao vivo.`;
+    case "disabled":
+      return `${name} estão desligados nesta instalação. Os resultados abaixo não incluem voos ao vivo.`;
+    case "budget_exhausted":
+      return `Limite mensal de consultas aéreas atingido. Os voos ao vivo voltam no próximo mês ou quando o limite for aumentado.`;
+    default:
+      return `${name} não responderam a esta busca. Tente pesquisar de novo em instantes.`;
+  }
+}
+
 export default function Home() {
   const [activeParams, setActiveParams] = useState<SearchParams | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>("TRIVIO_SCORE");
@@ -36,6 +52,7 @@ export default function Home() {
     hackerFares,
     completedStats,
     error,
+    providerNotices,
     activeProviders,
     startSearch,
     cancelSearch,
@@ -269,6 +286,21 @@ export default function Home() {
           </div>
         )}
 
+        {/* Avisos de provedores que não responderam (ex: aéreo ao vivo indisponível) */}
+        {providerNotices.length > 0 && (
+          <div className="mb-6 space-y-2">
+            {providerNotices.map((notice) => (
+              <div
+                key={`${notice.provider}-${notice.reason ?? "erro"}`}
+                role="status"
+                className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold"
+              >
+                {providerNoticeText(notice)}
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* 1. Destaque de Hacker Fares (Combinações Inteligentes) */}
         {hackerFares.length > 0 && (
           <div className="mb-8">
@@ -289,7 +321,8 @@ export default function Home() {
               <QuoteCard
                 key={quote.dedup_signature || idx}
                 quote={quote}
-                isBestScore={idx === 0 && sortBy === "TRIVIO_SCORE"}
+                isBestScore={idx === 0}
+                sortBy={sortBy}
               />
             ))}
           </div>
