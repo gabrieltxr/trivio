@@ -8,7 +8,7 @@ import TrustPillars from "@/components/TrustPillars";
 import QuoteCard from "@/components/QuoteCard";
 import HackerFareCard from "@/components/HackerFareCard";
 import SkeletonCard from "@/components/SkeletonCard";
-import { useSearchWebSocket } from "@/hooks/useSearchWebSocket";
+import { useSearchWebSocket, ProviderNotice } from "@/hooks/useSearchWebSocket";
 import { SearchParams } from "@/types";
 import {
   Sparkles,
@@ -25,6 +25,35 @@ import {
 type SortOption = "TRIVIO_SCORE" | "PRICE_ASC" | "DURATION_ASC";
 type ModalFilter = "ALL" | "AIR" | "ROAD" | "HYBRID";
 
+const NAMES: Record<string, string> = { clickbus: "A ClickBus", ignav: "O provedor aéreo" };
+
+const ROAD_CLASS_LABELS: Record<string, string> = {
+  CONVENCIONAL: "Convencional",
+  EXECUTIVO: "Executivo",
+  SEMI_LEITO: "Semi-leito",
+  LEITO: "Leito",
+};
+
+const brl = (value: number) => `R$ ${value.toFixed(2).replace(".", ",")}`;
+
+/** Texto do aviso exibido quando um provedor não respondeu, conforme o motivo da API. */
+function providerNoticeText(notice: ProviderNotice): string {
+  const isAir = notice.provider.startsWith("ignav");
+  const name = isAir ? "Preços aéreos ao vivo" : "Esta fonte";
+  switch (notice.reason) {
+    case "not_configured":
+      return `${name} estão indisponíveis: a chave de acesso não está configurada no servidor. Os resultados abaixo não incluem voos ao vivo.`;
+    case "disabled":
+      return `${name} estão desligados nesta instalação. Os resultados abaixo não incluem voos ao vivo.`;
+    case "access_denied":
+      return `${NAMES[notice.provider] ?? "Esta fonte"} recusou o acesso automatizado, então os resultados dela não aparecem nesta busca.`;
+    case "budget_exhausted":
+      return `Limite mensal de consultas aéreas atingido. Os voos ao vivo voltam no próximo mês ou quando o limite for aumentado.`;
+    default:
+      return `${name} não responderam a esta busca. Tente pesquisar de novo em instantes.`;
+  }
+}
+
 export default function Home() {
   const [activeParams, setActiveParams] = useState<SearchParams | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>("TRIVIO_SCORE");
@@ -36,6 +65,8 @@ export default function Home() {
     hackerFares,
     completedStats,
     error,
+    providerNotices,
+    roadReferences,
     activeProviders,
     startSearch,
     cancelSearch,
@@ -269,6 +300,55 @@ export default function Home() {
           </div>
         )}
 
+        {/* Referência histórica rodoviária (ANTT): fica fora do ranking, nunca é uma oferta */}
+        {roadReferences.length > 0 && (
+          <div className="mb-6 p-4 rounded-2xl bg-slate-50 border border-slate-200">
+            <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-700 mb-1">
+              Referência histórica de ônibus (ANTT)
+            </h3>
+            <p className="text-[11px] text-slate-500 mb-3">
+              Faixa do que foi vendido nesta rota ({roadReferences[0].reference_period}). Não é uma passagem:
+              não tem horário, empresa nem compra. Não entra na comparação.
+            </p>
+            <div className="space-y-2">
+              {roadReferences.map((ref) => (
+                <div
+                  key={ref.service_class}
+                  className="flex flex-wrap items-baseline justify-between gap-2 text-xs"
+                >
+                  <span className="font-bold text-slate-800">
+                    {ROAD_CLASS_LABELS[ref.service_class] ?? ref.service_class}
+                  </span>
+                  <span className="text-slate-600">
+                    costuma ficar entre <strong>{brl(ref.p25_brl)}</strong> e <strong>{brl(ref.p75_brl)}</strong>
+                    {" "}(mediana {brl(ref.median_brl)})
+                  </span>
+                  {ref.travel_month_mean_brl !== null && (
+                    <span className="text-slate-500">
+                      média em {ref.travel_month}: {brl(ref.travel_month_mean_brl)}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Avisos de provedores que não responderam (ex: aéreo ao vivo indisponível) */}
+        {providerNotices.length > 0 && (
+          <div className="mb-6 space-y-2">
+            {providerNotices.map((notice) => (
+              <div
+                key={`${notice.provider}-${notice.reason ?? "erro"}`}
+                role="status"
+                className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold"
+              >
+                {providerNoticeText(notice)}
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* 1. Destaque de Hacker Fares (Combinações Inteligentes) */}
         {hackerFares.length > 0 && (
           <div className="mb-8">
@@ -289,7 +369,8 @@ export default function Home() {
               <QuoteCard
                 key={quote.dedup_signature || idx}
                 quote={quote}
-                isBestScore={idx === 0 && sortBy === "TRIVIO_SCORE"}
+                isBestScore={idx === 0}
+                sortBy={sortBy}
               />
             ))}
           </div>
