@@ -272,3 +272,27 @@ def test_interline_flight_is_not_paid_for_without_bus_leg(mock_air, mock_road, c
             pass
 
     assert mock_air.call_count == 1      # só o voo Origem -> Destino
+
+
+@patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
+@patch("app.services.air_quotes.AirQuoteService.get_quotes")
+def test_websocket_reports_refused_site_as_access_denied(mock_air, mock_road, client):
+    """Site que recusa o acesso (403) não pode aparecer como 'zero resultados' sem explicação."""
+    mock_road.return_value = []
+    mock_air.return_value = []
+
+    with patch("app.collectors.road.clickbus.ClickBusCollector.access_denied", True, create=True):
+        with client.websocket_connect("/ws/search") as ws:
+            ws.send_text(json.dumps({
+                "action": "start_search", "origin": "SAO", "destination": "RIO", "date": "2026-11-20",
+            }))
+            ws.receive_json()  # SEARCH_STARTED
+            events = []
+            while True:
+                event = ws.receive_json()
+                events.append(event)
+                if event["event"] == "SEARCH_COMPLETED":
+                    break
+
+    [denied] = [e for e in events if e["event"] == "PROVIDER_ERROR" and e["provider"] == "clickbus"]
+    assert denied["reason"] == "access_denied"

@@ -312,6 +312,19 @@ async def _fetch_provider_batch(
         fetch = getattr(collector_instance, "get_quotes", None) or collector_instance.safe_fetch
         quotes = await fetch(origin, destination, travel_date)
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
+        # O coletor de sites recusados (401/403 ou robots.txt) devolve lista vazia; aqui
+        # transformamos isso em aviso, para não parecer 'zero resultados'.
+        if getattr(collector_instance, "access_denied", False):
+            logger.warning(f"Coletor {collector_name} sem acesso autorizado pelo provedor.")
+            return {
+                "success": False,
+                "provider": collector_name,
+                "modal": collector_instance.modal,
+                "quotes": [],
+                "elapsed_ms": elapsed_ms,
+                "error": "O provedor recusou o acesso automatizado a esta fonte.",
+                "reason": "access_denied",
+            }
         return {
             "success": True,
             "provider": collector_name,

@@ -25,6 +25,8 @@ import {
 type SortOption = "TRIVIO_SCORE" | "PRICE_ASC" | "DURATION_ASC";
 type ModalFilter = "ALL" | "AIR" | "ROAD" | "HYBRID";
 
+const NAMES: Record<string, string> = { clickbus: "A ClickBus", ignav: "O provedor aéreo" };
+
 /** Texto do aviso exibido quando um provedor não respondeu, conforme o motivo da API. */
 function providerNoticeText(notice: ProviderNotice): string {
   const isAir = notice.provider.startsWith("ignav");
@@ -34,6 +36,8 @@ function providerNoticeText(notice: ProviderNotice): string {
       return `${name} estão indisponíveis: a chave de acesso não está configurada no servidor. Os resultados abaixo não incluem voos ao vivo.`;
     case "disabled":
       return `${name} estão desligados nesta instalação. Os resultados abaixo não incluem voos ao vivo.`;
+    case "access_denied":
+      return `${NAMES[notice.provider] ?? "Esta fonte"} recusou o acesso automatizado, então os resultados dela não aparecem nesta busca.`;
     case "budget_exhausted":
       return `Limite mensal de consultas aéreas atingido. Os voos ao vivo voltam no próximo mês ou quando o limite for aumentado.`;
     default:
