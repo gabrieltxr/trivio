@@ -40,6 +40,26 @@ EMPTY_RESULT_CODES = {"route_not_found", "unsupported_search"}
 
 BOOKING_LINK_TTL_SECONDS = 1800   # o Ignav reaproveita resultados por até 30 min
 
+# Com menos voos que isso, um preço repetido pode ser coincidência; a partir daqui, é suspeito.
+UNIFORM_PRICE_MIN_FLIGHTS = 3
+
+
+def flag_uniform_prices(quotes: List[StandardizedQuote]) -> List[StandardizedQuote]:
+    """Marca a lista quando o provedor devolve o mesmo preço para voos distintos.
+
+    Caso visto em 17/11 (CGH->SDU): 55 voos com R$ 2.737 cada, marcados como
+    'verified' pelo Ignav. Não corrigimos o preço; só sinalizamos para o usuário.
+    """
+    prices = {q.route_metadata.get("price_total_brl") for q in quotes}
+    suspect = len(quotes) >= UNIFORM_PRICE_MIN_FLIGHTS and len(prices) == 1 and None not in prices
+    for quote in quotes:
+        quote.route_metadata["price_suspect"] = suspect
+        if suspect:
+            quote.route_metadata["price_suspect_flights"] = len(quotes)
+    if suspect:
+        logger.warning(f"[ignav] {len(quotes)} voos com o mesmo preço ({next(iter(prices))}): suspeito")
+    return quotes
+
 
 class AirProviderUnavailableError(CollectorError):
     """O aéreo ao vivo não foi consultado: sem chave, desligado ou orçamento esgotado."""
@@ -242,7 +262,7 @@ class AirQuoteService:
     ) -> List[StandardizedQuote]:
         """Cópias novas das cotações (o termômetro e o pipeline alteram os metadados)."""
         elapsed = round((time.perf_counter() - started) * 1000, 1)
-        quotes = [quote_from_dict(item) for item in data]
+        quotes = flag_uniform_prices([quote_from_dict(item) for item in data])
         for quote in quotes:
             stats = quote.route_metadata.setdefault("collector_stats", {})
             stats.update({"provider": self.provider_name, "tier": tier, "latency_ms": elapsed})
