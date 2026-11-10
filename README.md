@@ -411,7 +411,7 @@ O projeto conta com cobertura de testes unitários e de integração cobrindo co
 ```bash
 pytest tests/ -v
 ```
-*(Todos os 223 testes devem passar com 100% de sucesso, após `python scripts/init_db.py`)*
+*(Todos os testes devem passar com 100% de sucesso. Não é preciso rodar `scripts/init_db.py` antes: a suíte cria um banco SQLite temporário e o semeia sozinha, em `tests/conftest.py`, sem tocar no `trivio_dev.db`.)*
 
 ### Verificação e Build do Frontend
 ```bash
