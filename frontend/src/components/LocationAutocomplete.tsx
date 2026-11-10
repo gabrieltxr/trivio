@@ -29,6 +29,14 @@ interface LocationAutocompleteProps {
   required?: boolean;
 }
 
+// Ordem e títulos das seções: hubs, depois aeroportos, depois rodoviárias.
+const TYPE_ORDER: Record<LocationType, number> = { hub: 0, airport: 1, bus_station: 2 };
+const SECTION_TITLES: Record<LocationType, string> = {
+  hub: "Hubs & Cidades",
+  airport: "Aeroportos",
+  bus_station: "Rodoviárias",
+};
+
 export default function LocationAutocomplete({
   label,
   value,
@@ -46,6 +54,12 @@ export default function LocationAutocomplete({
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Sugestões na ordem exibida (agrupadas por tipo; a relevância se mantém dentro de cada grupo).
+  // Navegação por teclado e renderização usam esta mesma lista, então os índices batem.
+  const ordered = [...suggestions].sort(
+    (a, b) => TYPE_ORDER[a.type] - TYPE_ORDER[b.type]
+  );
 
   // Sincroniza a exibição amigável do campo a partir do código externo
   useEffect(() => {
@@ -193,19 +207,19 @@ export default function LocationAutocomplete({
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setHighlightedIndex((prev) =>
-        prev < suggestions.length - 1 ? prev + 1 : 0
+        prev < ordered.length - 1 ? prev + 1 : 0
       );
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setHighlightedIndex((prev) =>
-        prev > 0 ? prev - 1 : suggestions.length - 1
+        prev > 0 ? prev - 1 : ordered.length - 1
       );
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (highlightedIndex >= 0 && highlightedIndex < suggestions.length) {
-        handleSelect(suggestions[highlightedIndex]);
-      } else if (suggestions.length > 0) {
-        handleSelect(suggestions[0]);
+      if (highlightedIndex >= 0 && highlightedIndex < ordered.length) {
+        handleSelect(ordered[highlightedIndex]);
+      } else if (ordered.length > 0) {
+        handleSelect(ordered[0]);
       }
     } else if (e.key === "Escape") {
       e.preventDefault();
@@ -286,10 +300,13 @@ export default function LocationAutocomplete({
             onChange={handleInputChange}
             onFocus={() => {
               setIsOpen(true);
+              // Seleciona o texto atual: digitar substitui em vez de acrescentar ao valor anterior
+              inputRef.current?.select();
               if (!inputValue.trim()) {
                 setSuggestions(getPopularLocations());
               }
             }}
+            onClick={(e) => e.currentTarget.select()}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
             required={required}
@@ -337,7 +354,7 @@ export default function LocationAutocomplete({
             )}
           </div>
 
-          {suggestions.length === 0 ? (
+          {ordered.length === 0 ? (
             <div className="py-6 px-4 text-center text-slate-400 text-sm">
               <Search className="w-6 h-6 mx-auto mb-2 text-slate-300 stroke-[1.5]" />
               <p className="font-semibold text-slate-600">
@@ -349,11 +366,22 @@ export default function LocationAutocomplete({
             </div>
           ) : (
             <ul className="space-y-1">
-              {suggestions.map((item, index) => {
+              {ordered.map((item, index) => {
                 const isSelected = value === item.code;
                 const isHighlighted = highlightedIndex === index;
+                const showHeader =
+                  index === 0 || ordered[index - 1].type !== item.type;
 
-                return (
+                return [
+                  showHeader ? (
+                    <li
+                      key={`header-${item.type}`}
+                      role="presentation"
+                      className="px-3 pt-2 pb-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider"
+                    >
+                      {SECTION_TITLES[item.type]}
+                    </li>
+                  ) : null,
                   <li
                     key={item.id}
                     onMouseEnter={() => setHighlightedIndex(index)}
@@ -408,8 +436,8 @@ export default function LocationAutocomplete({
                         <Check className="w-4 h-4 text-emerald-600 stroke-[2.5]" />
                       )}
                     </div>
-                  </li>
-                );
+                  </li>,
+                ];
               })}
             </ul>
           )}

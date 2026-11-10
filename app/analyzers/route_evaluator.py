@@ -452,6 +452,14 @@ class RouteEvaluator:
                         setbacks.append(rule["setback"])
                         break
 
+        # 5. Preço suspeito: a fonte devolveu o mesmo valor para vários voos
+        if meta.get("price_suspect"):
+            n_flights = int(meta.get("price_suspect_flights") or 0)
+            setbacks.append(
+                f"Preço suspeito: a fonte devolveu o mesmo valor para {n_flights} voos desta data. "
+                "Confirme o preço no site da companhia antes de decidir."
+            )
+
         # Remove duplicatas preservando a ordem
         unique_pros = list(dict.fromkeys(pros))
         unique_cons = list(dict.fromkeys(cons))
