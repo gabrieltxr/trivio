@@ -143,6 +143,30 @@ def test_websocket_reports_air_not_queried_with_reason(mock_air, mock_road, clie
 
 @patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
 @patch("app.services.air_quotes.AirQuoteService.get_quotes")
+def test_websocket_reports_billing_required_as_its_own_reason(mock_air, mock_road, client):
+    """HTTP 402 da conta Ignav não pode virar 'provider_error' genérico: vira motivo próprio."""
+    from app.collectors.air.ignav import IgnavBillingError
+
+    mock_road.return_value = [_create_dummy_quote("ROAD", "clickbus", "Cometa", 100.0)]
+    mock_air.side_effect = IgnavBillingError(
+        "Ignav HTTP 402 (billing_required): conta sem crédito", reason="billing_required", code="billing_required"
+    )
+
+    with client.websocket_connect("/ws/search") as ws:
+        ws.send_text(json.dumps({
+            "action": "start_search", "origin": "SAO", "destination": "RIO", "date": "2026-11-20",
+        }))
+        ws.receive_json()  # SEARCH_STARTED
+        events = [ws.receive_json(), ws.receive_json()]
+
+    [air_event] = [e for e in events if e["event"] == "PROVIDER_ERROR"]
+    assert air_event["provider"] == "ignav"
+    assert air_event["reason"] == "billing_required"
+    assert mock_air.call_count == 1  # sem retry: a cobrança não é repetida
+
+
+@patch("app.collectors.road.clickbus.ClickBusCollector.safe_fetch")
+@patch("app.services.air_quotes.AirQuoteService.get_quotes")
 def test_websocket_provider_error_isolation(mock_air, mock_road, client, monkeypatch):
     """Valida padrão Bulkhead: erro em um coletor gera PROVIDER_ERROR sem derrubar o outro."""
     # Este teste cobre o caminho com ônibus ligado (fonte autorizada, hoje em hold).

@@ -192,6 +192,22 @@ async def test_errors_are_not_cached_nor_billed(session_factory):
     assert [(r.status, r.billed) for r in _rows(session_factory)] == [("error", 0), ("error", 0)]
 
 
+@pytest.mark.asyncio
+async def test_billing_refusal_is_not_retried_nor_billed(session_factory):
+    """402 da conta: uma tentativa só, registrada como erro sem cobrança, e o erro sobe com o motivo."""
+    from app.collectors.air.ignav import IgnavBillingError
+
+    collector = FakeCollector(error=IgnavBillingError("Ignav HTTP 402 (billing_required)", reason="billing_required"))
+    service = _service(session_factory, collector)
+
+    with pytest.raises(IgnavBillingError) as info:
+        await service.get_quotes("CGH", "SDU", "2026-12-01")
+
+    assert info.value.reason == "billing_required"
+    assert collector.calls == 1
+    assert [(r.status, r.billed) for r in _rows(session_factory)] == [("error", 0)]
+
+
 # ==============================================================================
 # 2. Orçamento
 # ==============================================================================

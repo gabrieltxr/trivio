@@ -32,6 +32,7 @@ from app.analyzers.route_evaluator import enrich_quote_with_evaluation
 from app.analyzers.trivio_scorer import generate_hacker_fares, score_and_rank_quotes
 from app.cache.deduplicator import deduplicate_quotes
 from app.services.air_quotes import AirProviderUnavailableError, get_air_quote_service
+from app.collectors.air.ignav import IgnavBillingError
 from app.collectors.base import StandardizedQuote
 from app.analyzers.road_reference import build_road_references
 from app.collectors.road.clickbus import ClickBusCollector, CLICKBUS_SLUG_MAP
@@ -343,6 +344,19 @@ async def _fetch_provider_batch(
     except AirProviderUnavailableError as exc:
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
         logger.warning(f"Coletor {collector_name} não consultado ({exc.reason}): {exc}")
+        return {
+            "success": False,
+            "provider": collector_name,
+            "modal": collector_instance.modal,
+            "quotes": [],
+            "elapsed_ms": elapsed_ms,
+            "error": str(exc),
+            "reason": exc.reason,
+        }
+    except IgnavBillingError as exc:
+        # Conta sem crédito ou no teto mensal do provedor: não é falha técnica, e retentar não ajuda.
+        elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
+        logger.warning(f"Coletor {collector_name} recusado por cobrança ({exc.reason}): {exc}")
         return {
             "success": False,
             "provider": collector_name,

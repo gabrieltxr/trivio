@@ -43,7 +43,16 @@ PROVIDER_NAME = "ignav"
 
 
 class IgnavBillingError(CollectorError):
-    """Sem crédito ou com limite de gasto atingido (HTTP 402 / 429). Não adianta retentar."""
+    """Sem crédito ou com limite de gasto atingido (HTTP 402 / 429). Não adianta retentar.
+
+    `reason` diz o motivo para a interface: 'billing_required' (402, a conta ainda não tem
+    forma de pagamento ou crédito) ou 'spend_limit_reached' (429, teto mensal da conta).
+    """
+
+    def __init__(self, message: str, reason: str, code: Optional[str] = None):
+        super().__init__(message)
+        self.reason = reason
+        self.code = code
 
 
 class IgnavRequestError(CollectorError):
@@ -77,8 +86,10 @@ def raise_for_ignav_status(response: httpx.Response) -> None:
 
     if status in (401, 403):
         raise CollectorNotAuthorizedError(f"{summary}. Confira IGNAV_API_KEY no .env.")
-    if status in (402, 429):
-        raise IgnavBillingError(summary)
+    if status == 402:
+        raise IgnavBillingError(summary, reason="billing_required", code=code)
+    if status == 429:
+        raise IgnavBillingError(summary, reason="spend_limit_reached", code=code)
     if status == 503:
         raise CollectorRateLimitError(summary)
     raise IgnavRequestError(summary, code=code, status_code=status)

@@ -49,6 +49,10 @@ function providerNoticeText(notice: ProviderNotice): string {
       return `${NAMES[notice.provider] ?? "Esta fonte"} recusou o acesso automatizado, então os resultados dela não aparecem nesta busca.`;
     case "budget_exhausted":
       return `Limite mensal de consultas aéreas atingido. Os voos ao vivo voltam no próximo mês ou quando o limite for aumentado.`;
+    case "billing_required":
+      return `A conta do provedor aéreo não tem crédito ou forma de pagamento ativa, então os voos ao vivo não foram consultados. Os resultados abaixo não incluem voos aéreos. Regularize a cobrança no painel do provedor.`;
+    case "spend_limit_reached":
+      return `A conta do provedor aéreo atingiu o teto de gasto do mês, então os voos ao vivo não foram consultados. Os resultados abaixo não incluem voos aéreos. O teto precisa ser aumentado no painel do provedor.`;
     default:
       return `${name} não responderam a esta busca. Tente pesquisar de novo em instantes.`;
   }

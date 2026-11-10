@@ -145,8 +145,10 @@ Motivos de falha informados ao frontend, em vez de uma lista vazia com aparênci
 |---|---|
 | `not_configured` | `IGNAV_API_KEY` ausente |
 | `disabled` | `AIR_MONTHLY_REQUEST_BUDGET=0` |
-| `budget_exhausted` | Teto mensal atingido |
-| `provider_error` | Erro do provedor (timeout, 402, 429, 503, etc.) |
+| `budget_exhausted` | Teto mensal atingido (limite interno do Trivio, `AIR_MONTHLY_REQUEST_BUDGET`) |
+| `billing_required` | Ignav respondeu HTTP 402: conta sem crédito ou sem cartão cadastrado. Não há retry; regularize no painel do Ignav |
+| `spend_limit_reached` | Ignav respondeu HTTP 429: teto de gasto mensal da própria conta Ignav atingido |
+| `provider_error` | Outro erro do provedor (timeout, 503, etc.) |
 
 **Custo.** O Ignav oferece 1.000 requests grátis, uma única vez. Depois disso, cada 1.000
 requests bem-sucedidas custam US$ 2, cobrados por mês. Um cartão de crédito precisa estar
