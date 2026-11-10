@@ -173,6 +173,18 @@ def test_maps_documented_errors(status, code, exc):
         assert info.value.code == code
 
 
+@pytest.mark.parametrize("status,code,reason", [
+    (402, "billing_required", "billing_required"),
+    (429, "monthly_spend_limit_reached", "spend_limit_reached"),
+])
+def test_billing_errors_carry_reason_for_the_interface(status, code, reason):
+    """402 e 429 têm motivos distintos: a tela explica o que fazer em cada caso."""
+    with pytest.raises(IgnavBillingError) as info:
+        raise_for_ignav_status(_response(status, code))
+    assert info.value.reason == reason
+    assert info.value.code == code
+
+
 def test_success_does_not_raise():
     raise_for_ignav_status(_response(200))
 
