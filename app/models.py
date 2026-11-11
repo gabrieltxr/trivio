@@ -230,3 +230,70 @@ class ProviderQuery(Base):
             f"<ProviderQuery({self.provider} {self.kind} {self.origin}->{self.destination} "
             f"{self.travel_date} status={self.status} n={self.quotes_count})>"
         )
+
+
+class BusSchedule(Base):
+    """Horário de partida de uma linha interestadual de ônibus (ANTT, dados abertos, CC-BY).
+
+    Fonte: conjunto "Horários" (SIGMA) do portal de dados abertos da ANTT. Cada linha da
+    tabela é uma partida no sentido da viagem (`route_key` = 'ORIGEM-UF|DESTINO-UF'),
+    com a classe de serviço e os dias da semana e meses em que opera. Só cobre linhas
+    interestaduais e internacionais; não traz duração nem preço.
+    """
+    __tablename__ = "bus_schedules"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    route_key = Column(String(160), nullable=False, index=True)
+    origin_city = Column(String(120), nullable=False)
+    origin_state = Column(String(2), nullable=False)
+    destination_city = Column(String(120), nullable=False)
+    destination_state = Column(String(2), nullable=False)
+
+    company_name = Column(String(150), nullable=False)
+    company_cnpj = Column(String(20))
+    line_prefix = Column(String(20), nullable=False)
+    service_class = Column(String(30), nullable=False, index=True)
+
+    departure_time = Column(String(5), nullable=False)   # 'HH:MM', hora local da origem
+    weekdays = Column(String(7), nullable=False)         # seg..dom, '1' = opera
+    months = Column(String(12), nullable=False)          # jan..dez, '1' = opera
+
+    source_period = Column(String(7), nullable=False, index=True)   # 'AAAA-MM' do arquivo
+    # Feed de origem: NULL = ANTT (interestadual); 'artesp', ... = GTFS (app/collectors/gtfs/feeds.py)
+    feed = Column(String(40), nullable=True)
+    imported_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "route_key", "line_prefix", "service_class", "departure_time", "source_period",
+            name="uq_bus_schedule",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<BusSchedule({self.route_key} {self.departure_time} {self.service_class} "
+            f"{self.company_name} {self.line_prefix})>"
+        )
+
+
+class GtfsRouteFare(Base):
+    """Tarifa de uma linha de um feed GTFS (tarifa regulada/cadastrada, não preço de venda)."""
+    __tablename__ = "gtfs_route_fares"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    feed = Column(String(40), nullable=False, index=True)
+    source_period = Column(String(7), nullable=False, index=True)
+    route_id = Column(String(40), nullable=False)
+    route_name = Column(String(255), nullable=False)
+    route_key = Column(String(160), nullable=False, index=True)
+    price_brl = Column(Float, nullable=False)
+    currency = Column(String(3), nullable=False, default="BRL")
+    imported_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        UniqueConstraint("feed", "source_period", "route_id", name="uq_gtfs_route_fare"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<GtfsRouteFare({self.feed} {self.route_key} R$ {self.price_brl})>"

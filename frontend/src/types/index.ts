@@ -111,6 +111,8 @@ export interface FareQuote {
     /** Estimativa gerada pelo Trivio sem preço real de mercado (não disponível para compra). */
     is_simulated?: boolean;
     simulation_notice?: string;
+    /** Origem do preço: "antt_projection" (ônibus) ou "antt_projection+ignav" (conexão). */
+    price_basis?: string;
     booking_url?: string;
     [key: string]: unknown;
   };

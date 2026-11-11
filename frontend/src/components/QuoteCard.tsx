@@ -43,6 +43,13 @@ const BEST_BANNER: Record<SortCriterion, { title: string; subtitle: string }> = 
   },
 };
 
+/** Nome exibido da fonte de cada cotação. */
+const PROVIDER_LABELS: Record<string, string> = {
+  antt_projection: "Dados ANTT",
+  ignav: "Ignav",
+  trivio_interliner: "Conexão Trivio",
+};
+
 export default function QuoteCard({ quote, isBestScore = false, sortBy = "TRIVIO_SCORE" }: QuoteCardProps) {
   const [showDetails, setShowDetails] = useState(false);
 
@@ -187,7 +194,7 @@ export default function QuoteCard({ quote, isBestScore = false, sortBy = "TRIVIO
                     )}
                   </div>
                   <span className="text-xs text-slate-400 capitalize">
-                    {quote.provider_source}
+                    {PROVIDER_LABELS[quote.provider_source] ?? (quote.provider_source.startsWith("gtfs_") ? "Horário GTFS" : quote.provider_source)}
                   </span>
                 </div>
               </div>
@@ -203,10 +210,16 @@ export default function QuoteCard({ quote, isBestScore = false, sortBy = "TRIVIO
                 )}
                 {isSimulated && (
                   <span
-                    title={meta.simulation_notice || "Estimativa simulada, sem tarifa real de mercado."}
+                    title={meta.simulation_notice || "Estimativa, sem tarifa real de mercado."}
                     className="px-2.5 py-0.5 rounded-full bg-slate-200 text-slate-700 text-[11px] font-bold border border-slate-300"
                   >
-                    Estimativa simulada
+                    {meta.price_basis === "antt_projection+ignav"
+                      ? "Ônibus estimado (ANTT) + voo ao vivo"
+                      : meta.price_basis === "antt_projection"
+                      ? "Estimativa ANTT"
+                      : meta.price_basis === "gtfs_fare_regulated"
+                      ? "Horário GTFS · tarifa regulada"
+                      : "Estimativa"}
                   </span>
                 )}
               </div>

@@ -24,8 +24,10 @@ from app.api.schemas import (
     HubBase,
     HubDetailResponse,
     LocationSuggestion,
+    RoadFareProjectionResponse,
     TerminalBase,
 )
+from app.analyzers.road_fare_projection import project_route_fare
 from app.collectors.base import CollectorError
 from app.database import get_db
 from app.geo.catchment import CatchmentFinder
@@ -478,6 +480,38 @@ async def air_booking_link(
     return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
 
 
-@router.get("/air/usage", summary="Consumo do orçamento mensal do aéreo ao vivo")
+@router.get("/air/usage", summary="Saldo estimado de requests do Ignav (aéreo ao vivo)")
 def air_usage():
     return get_air_quote_service().usage()
+
+
+# ==============================================================================
+# 4. Projeção de tarifa rodoviária (série ANTT/Monitriip)
+# ==============================================================================
+
+ROAD_SERVICE_CLASSES = {"CONVENCIONAL", "EXECUTIVO", "SEMI_LEITO", "LEITO"}
+
+
+@router.get(
+    "/road/projection",
+    response_model=RoadFareProjectionResponse,
+    summary="Projeção de tarifa rodoviária a partir das vendas ANTT",
+)
+def road_fare_projection(
+    origin_city: str = Query(..., min_length=2),
+    origin_state: str = Query(..., min_length=2, max_length=2),
+    destination_city: str = Query(..., min_length=2),
+    destination_state: str = Query(..., min_length=2, max_length=2),
+    trip_month: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Mês da viagem, AAAA-MM"),
+    service_class: str = Query("CONVENCIONAL", description="CONVENCIONAL, EXECUTIVO, SEMI_LEITO ou LEITO"),
+    db: Session = Depends(get_db),
+):
+    """Projeção com base em vendas reais (ANTT). Não é preço anunciado nem disponibilidade."""
+    service = service_class.strip().upper()
+    if service not in ROAD_SERVICE_CLASSES:
+        raise HTTPException(status_code=422, detail=f"Classe inválida: {service_class}")
+
+    projection = project_route_fare(
+        db, origin_city, origin_state, destination_city, destination_state, service, trip_month
+    )
+    return RoadFareProjectionResponse(**projection.__dict__)

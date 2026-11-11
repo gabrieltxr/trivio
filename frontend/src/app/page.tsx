@@ -48,9 +48,15 @@ function providerNoticeText(notice: ProviderNotice): string {
     case "access_denied":
       return `${NAMES[notice.provider] ?? "Esta fonte"} recusou o acesso automatizado, então os resultados dela não aparecem nesta busca.`;
     case "budget_exhausted":
-      return `Limite mensal de consultas aéreas atingido. Os voos ao vivo voltam no próximo mês ou quando o limite for aumentado.`;
+      return `O saldo de consultas aéreas do provedor chegou ao limite de segurança, então os voos ao vivo não foram consultados. Os resultados abaixo não incluem voos.`;
     case "billing_required":
       return `A conta do provedor aéreo não tem crédito ou forma de pagamento ativa, então os voos ao vivo não foram consultados. Os resultados abaixo não incluem voos aéreos. Regularize a cobrança no painel do provedor.`;
+    case "no_airport":
+      return `Voos não consultados: a origem ou o destino não tem aeroporto cadastrado. Os resultados abaixo não incluem voos.`;
+    case "no_bus_station":
+      return `Ônibus não consultado: a origem ou o destino não tem rodoviária cadastrada. Os resultados abaixo não incluem ônibus.`;
+    case "no_antt_data":
+      return `Não há vendas de ônibus registradas na ANTT para esta rota, então não há estimativa de ônibus. A ANTT cobre linhas interestaduais; rotas dentro do mesmo estado não aparecem.`;
     case "spend_limit_reached":
       return `A conta do provedor aéreo atingiu o teto de gasto do mês, então os voos ao vivo não foram consultados. Os resultados abaixo não incluem voos aéreos. O teto precisa ser aumentado no painel do provedor.`;
     default:
@@ -288,12 +294,13 @@ export default function Home() {
           </div>
         )}
 
-        {/* Aviso de Modo Simulação (nenhum coletor real retornou tarifas) */}
+        {/* Aviso das estimativas: ônibus pela ANTT e conexões ônibus + voo */}
         {quotes.some((q) => q.route_metadata?.is_simulated) && (
           <div className="mb-6 p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold">
-            Nenhum provedor real retornou tarifas para esta busca. As opções marcadas como
-            &quot;Estimativa simulada&quot; foram calculadas a partir da distância entre as cidades e
-            não representam preços reais nem estão disponíveis para compra.
+            As opções de ônibus usam dados abertos da ANTT: empresa e horário da grade oficial das linhas
+            interestaduais (quando a rota tem grade; senão, horário ilustrativo) e preço médio pago na
+            classe, não a tarifa daquela partida. Elas não estão disponíveis para compra. Nas conexões, só
+            o voo tem tarifa ao vivo.
           </div>
         )}
 
@@ -330,6 +337,15 @@ export default function Home() {
                   {ref.travel_month_mean_brl !== null && (
                     <span className="text-slate-500">
                       média em {ref.travel_month}: {brl(ref.travel_month_mean_brl)}
+                    </span>
+                  )}
+                  {ref.projection && ref.projection.estimate_brl !== null && (
+                    <span className="w-full text-[11px] text-slate-500">
+                      Projeção para {ref.projection.trip_month}: <strong>{brl(ref.projection.estimate_brl)}</strong>
+                      {ref.projection.low_brl !== null && ref.projection.high_brl !== null && (
+                        <> (entre {brl(ref.projection.low_brl)} e {brl(ref.projection.high_brl)})</>
+                      )}
+                      {" "}· confiança {ref.projection.confidence} · {ref.projection.sample_size} bilhetes
                     </span>
                   )}
                 </div>

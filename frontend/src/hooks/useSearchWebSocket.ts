@@ -24,6 +24,22 @@ export interface RoadReference {
   p75_brl: number;
   travel_month_mean_brl: number | null;
   travel_month: string | null;
+  /** Projeção do analisador de tarifas (série ANTT) para o mês da viagem. */
+  projection: RoadFareProjection | null;
+}
+
+/** Saída do analisador de tarifas rodoviárias (mesma do endpoint /api/v1/road/projection). */
+export interface RoadFareProjection {
+  route_key: string;
+  service_class: string;
+  trip_month: string;
+  estimate_brl: number | null;
+  low_brl: number | null;
+  high_brl: number | null;
+  sample_size: number;
+  confidence: "alta" | "média" | "baixa" | "sem_dados";
+  basis: "trip_month" | "recent_level" | "none";
+  notice: string;
 }
 
 /** Aviso de um provedor que não respondeu à busca (ex: aéreo sem chave ou sem orçamento). */

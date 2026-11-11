@@ -59,9 +59,14 @@ class Settings(BaseSettings):
     IGNAV_MARKET: str = "BR"                  # Mercado brasileiro: preços em BRL
     IGNAV_TIMEOUT_SECONDS: float = 30.0
 
-    # Teto de requests pagas ao provedor aéreo por mês (busca + link de compra).
-    # Ao atingir, o aéreo para de consultar e o frontend é avisado. 0 desliga o aéreo ao vivo.
-    AIR_MONTHLY_REQUEST_BUDGET: int = 800
+    # Saldo de requests do Ignav lido no painel do provedor. O plano gratuito tem 1.000
+    # requests únicas (não renovam por mês). O Trivio desconta as requests cobradas desde
+    # a leitura (busca, link de compra) e para de consultar ao chegar na margem de
+    # segurança, avisando o frontend. Ao conferir o painel, atualize os dois valores.
+    # 0 desliga o aéreo ao vivo.
+    AIR_REQUESTS_REMAINING: int = 980
+    AIR_REQUESTS_REMAINING_AS_OF: str = "2026-11-10T23:54:36"   # UTC, momento da leitura
+    AIR_REQUESTS_SAFETY_MARGIN: int = 20
     # Teto de validade do cache de consultas aéreas, acima das faixas por data de viagem.
     AIR_LIVE_CACHE_MAX_SECONDS: int = 7200
     # Grava as cotações ao vivo no histórico permanente (FareQuote). Desligado até

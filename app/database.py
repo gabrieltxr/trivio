@@ -73,6 +73,9 @@ _ADDED_COLUMNS = {
         "p75_brl": "FLOAT",
         "p90_brl": "FLOAT",
     },
+    "bus_schedules": {
+        "feed": "VARCHAR(40)",
+    },
 }
 
 
