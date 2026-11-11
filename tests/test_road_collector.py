@@ -1,7 +1,6 @@
 """Testes unitários para o coletor rodoviário ClickBus e parsers de viagens."""
 
 from datetime import datetime
-import json
 import httpx
 import pytest
 

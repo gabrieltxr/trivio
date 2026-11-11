@@ -26,47 +26,71 @@ O **Trivio** resolve essa assimetria através de um pipeline algorítmico avanç
 ```mermaid
 flowchart TD
     subgraph Frontend["Frontend (Next.js 14 App Router)"]
-        UI["Interface White Clean\n(Tailwind CSS + Lucide)"]
-        WSClient["useSearchWebSocket\n(Hook Reativo)"]
+        UI["Interface White Clean
+(Tailwind CSS + Lucide)"]
+        WSClient["useSearchWebSocket
+(Hook Reativo)"]
     end
 
     subgraph API["Backend API (FastAPI)"]
-        WS["WebSocket Endpoint\n(/ws/search)"]
-        REST["REST API v1\n(/api/v1/hubs, /catchment)"]
+        WS["WebSocket /ws/search
+(orquestra a busca)"]
+        REST["REST API v1
+(autocomplete, hubs, catchment,
+aéreo, projeção rodoviária)"]
+        Resolver["Entity Resolver
+(HUB:código, terminal ou nome)"]
     end
 
-    subgraph Engines["Intelligence & Processing Engines"]
-        Evaluator["Route Evaluator\n(Pros, Cons & Setbacks)"]
-        Scorer["Trivio Scorer\n(Índice de Agonia & Hacker Fares)"]
-        Thermometer["Price Thermometer\n(Polars Quartis P25/P50/P75)"]
-        Interliner["Virtual Interlining\n(NetworkX MultiDiGraph)"]
+    subgraph Sources["Fontes por modal"]
+        Road["Ônibus estimado
+(projeção ANTT ou GTFS, sem custo)"]
+        Air["AirQuoteService
+(cache, orçamento, coalescência)"]
+        Ignav["Ignav API
+(aéreo ao vivo, request paga)"]
     end
 
-    subgraph Collectors["Smart Collectors & Cache"]
-        Compliance["Compliance Layer\n(robots.txt + User-Agent identificado)"]
-        ClickBus["ClickBus Collector\n(requer autorização do provedor)"]
-        Ignav["AirQuoteService + Ignav\n(Aéreo ao vivo, cache e orçamento)"]
-        Deduplicator["Broker Deduplicator\n(SHA-256 Canonical Signatures)"]
-        TTLPolicy["Smart TTL Policy\n(D-1 a D-30+ Caching)"]
+    subgraph Engines["Pipeline de inteligência"]
+        Pipeline["Quote Pipeline + Deduplicator
+(transfer urbano, porta a porta, SHA-256)"]
+        Evaluator["Route Evaluator
+(Prós, Contras & Contratempos)"]
+        Thermometer["Price Thermometer
+(régua ANAC / ANTT, Polars)"]
+        Scorer["Trivio Scorer
+(Índice de Agonia & Hacker Fares)"]
+        Interliner["Virtual Interlining
+(ônibus até o hub + voo do hub)"]
+        Reference["Referência histórica ANTT
+(faixa de preço, fora do ranking)"]
     end
 
-    subgraph Storage["Storage Foundation"]
-        DB[(SQLite / PostgreSQL\nSQLAlchemy 2.0)]
+    subgraph Storage["Banco (SQLite / PostgreSQL, SQLAlchemy 2.0)"]
+        DB[("Hubs e terminais · séries ANTT/ANAC
+horários ANTT/GTFS · cache de consultas")]
     end
 
+    Importers["scripts/import_*.py
+(dados abertos ANTT, ANAC e GTFS)"] --> DB
     UI --> WSClient
-    WSClient <-->|Streaming em Tempo Real| WS
-    WS --> Compliance
-    Compliance --> ClickBus
-    ClickBus & Ignav --> Deduplicator
-    Deduplicator --> TTLPolicy
-    TTLPolicy --> DB
-    ClickBus & Ignav --> Evaluator
-    Evaluator --> Scorer
-    Scorer --> Thermometer
-    Thermometer --> Interliner
-    Interliner --> WS
+    UI --> REST
+    WSClient <-->|Streaming em tempo real| WS
+    WS --> Resolver
+    WS --> Road
+    WS --> Air
+    Air --> Ignav
+    Road --> DB
+    Air --> DB
+    Road & Air --> Pipeline
+    Pipeline --> Evaluator --> Thermometer --> Scorer
+    Scorer --> WS
+    Road & Air --> Interliner --> WS
+    WS --> Reference --> DB
 ```
+
+A ClickBus (`app/collectors/road/clickbus.py`) continua no código, mas está desligada
+(`ROAD_OFFERS_ENABLED = False`) até a liberação da API B2B. Ver *Estado atual dos provedores*.
 
 ---
 
@@ -77,10 +101,11 @@ flowchart TD
 - **ORM & Banco de Dados:** SQLAlchemy 2.0 (sessões síncronas), compatível com SQLite e PostgreSQL.
 - **Engenharia de Dados:** Polars (cálculo vetorial ultrarrápido de quartis estatísticos de preços).
 - **Grafos & Conexões:** NetworkX (algoritmo de interconexão modal com validação de MCT).
-- **Geolocalização:** Geopy / Geographiclib (distâncias geodésicas e raios de abrangência regional).
+- **Geolocalização:** Geopy (distâncias geodésicas e raios de abrangência regional).
+- **Resolução de Entidades:** RapidFuzz (busca aproximada de cidades e terminais pelo nome).
 - **Resiliência de Rede:** HTTPX + Tenacity (exponential backoff com jitter e isolamento bulkhead).
 - **Conformidade de Coleta:** Protego (robots.txt pela spec do Google), agente identificado e respeito a `Crawl-delay` / `Retry-After`.
-- **Qualidade & Testes:** Pytest, Pytest-Asyncio (223 testes automatizados).
+- **Qualidade & Testes:** Pytest, Pytest-Asyncio.
 
 ### Frontend (Node.js 20+ / Next.js 14)
 - **Arquitetura:** Next.js 14 (App Router, Server & Client Components).
@@ -98,7 +123,7 @@ terceiros passa por [`app/collectors/compliance.py`](app/collectors/compliance.p
 | Princípio | Como é aplicado |
 |---|---|
 | **Identificação honesta** | `User-Agent: TrivioBot/1.0 (+url; contato)`. Nunca imitamos um navegador. |
-| **Autorização** | O `robots.txt` de cada host é verificado antes da requisição, com `protego`. |
+| **Autorização** | O `robots.txt` de cada host é verificado antes da requisição, com `protego`. Não há chave de configuração que desligue essa checagem. |
 | **Ritmo educado** | Respeita `Crawl-delay`, intervalo mínimo por host e `Retry-After` (HTTP 429). |
 | **Obediência a recusas** | HTTP 401/403 encerra a coleta. Sem retentativa, sem navegador headless, sem contorno. |
 
@@ -179,6 +204,14 @@ porque os termos de uso do provedor ainda não foram conferidos. Isso é control
 cobradas desde então, contadas pelo próprio Trivio. Cada banco conta só as próprias requests; o saldo
 oficial é o do painel do Ignav, e vale atualizar `AIR_REQUESTS_REMAINING` ao conferi-lo.
 
+**Proteção do saldo.** Nenhuma entrada inválida vira request paga: a busca recusa data de ida no
+passado ou além de `SEARCH_MAX_DAYS_AHEAD`, volta antes da ida e valor da hora ou raio fora da faixa
+(`SEARCH_ERROR` com `reason: "invalid_params"`). Cada IP tem um limite de buscas e de links de compra
+por hora (`reason: "rate_limited"` na busca, HTTP 429 no link). O WebSocket só aceita conexões vindas
+das origens de `CORS_ORIGINS`, para que outro site não dispare buscas pelo navegador de quem o visita;
+clientes sem `Origin`, como a CLI, passam. O limite é por processo: com várias instâncias, cada uma conta
+o seu, e o teto global continua sendo o saldo do Ignav.
+
 **Virtual Interlining.** O voo do hub só é consultado depois que o trecho de ônibus até o hub
 trouxe resultado. Assim, não se paga por uma rota híbrida que não se forma.
 
@@ -248,9 +281,20 @@ nenhuma: a cobertura cresce com cada mês importado.
 **Limite:** a ANTT cobre o histórico, não a disponibilidade. Preço comprável em tempo real
 continua dependendo de acordo com um distribuidor.
 
-Quando nenhum provedor real responde, o Trivio exibe **estimativas calculadas pela distância
-geodésica**, sempre marcadas na interface como *"Estimativa simulada"*, sem link de compra e
-**nunca gravadas no banco** — para não contaminar o histórico do Termômetro de Preço.
+### Ônibus na busca: estimativas, não ofertas
+
+Sem distribuidor autorizado, o ônibus da busca é sempre uma **estimativa** montada a partir do banco:
+
+1. **Projeção ANTT** (`app/services/road_quotes.py`): preço médio pago na rota e classe, projetado
+   para o mês da viagem, com horários da grade da ANTT quando importada.
+2. **GTFS** (`app/services/gtfs_road_quotes.py`): quando a rota não tem série da ANTT, usa o horário
+   e a tarifa cadastrada da linha no feed (tarifa regulada, não o preço de venda).
+3. **Sem nenhum dos dois:** a busca não inventa preço. A interface recebe um `PROVIDER_ERROR` com
+   `reason: "no_antt_data"`.
+
+Essas cotações e as conexões ônibus + avião vêm marcadas como estimativa (`is_simulated`), aparecem
+na interface com o selo *"Estimativa ANTT"* ou *"Estimativa"*, não têm link de compra e **nunca são
+gravadas no banco**, para não contaminar o histórico do Termômetro de Preço.
 
 ---
 
@@ -261,18 +305,20 @@ trivio/
 ├── app/
 │   ├── analyzers/              # Motores de Inteligência do Trivio
 │   │   ├── interliner.py       # Virtual Interlining com NetworkX
-│   │   ├── price_thermometer.py# Termômetro de preços com Polars
+│   │   ├── price_thermometer.py# Termômetro de preços com Polars (régua ANAC / ANTT)
+│   │   ├── road_fare_projection.py # Projeção da tarifa rodoviária para o mês da viagem
+│   │   ├── road_reference.py   # Faixa histórica de preço por rota e classe (fora do ranking)
 │   │   ├── route_evaluator.py  # Avaliador de prós, contras e contratempos
 │   │   └── trivio_scorer.py    # Algoritmo do Trivio Score e Hacker Fares
 │   ├── api/                    # Camada de Apresentação e Comunicação
 │   │   ├── main.py             # Instância do FastAPI, Lifespan e CORS
-│   │   ├── routes.py           # Endpoints REST (Hubs, Terminais, Catchment)
+│   │   ├── routes.py           # REST: hubs, terminais, autocomplete, catchment, aéreo, projeção
 │   │   ├── schemas.py          # Schemas de validação Pydantic v2
-│   │   └── websocket.py        # Orquestrador de streaming em tempo real
+│   │   └── websocket.py        # Orquestrador de streaming em tempo real (/ws/search)
 │   ├── cache/                  # Camada de Cache Inteligente
 │   │   ├── deduplicator.py     # Deduplicação cross-broker e assinaturas SHA-256
 │   │   └── ttl_policy.py       # Política dinâmica de TTL conforme antecedência
-│   ├── collectors/             # Coletores de Provedores Modais
+│   ├── collectors/             # Coletores e importadores de dados
 │   │   ├── base.py             # Classe abstrata, retries e modelo StandardizedQuote
 │   │   ├── compliance.py       # robots.txt, User-Agent identificado, ritmo e recusas
 │   │   ├── air/
@@ -283,39 +329,50 @@ trivio/
 │   │   │   ├── portal.py       # Descoberta e download na listagem da ANAC
 │   │   │   ├── airfares.py     # Leitura e agregação por rota e mês (percentis ponderados)
 │   │   │   └── airports.py     # De-para IATA <-> ICAO dos aeroportos
-│   │   ├── antt/               # Dados abertos da ANTT (Monitriip)
+│   │   ├── antt/               # Dados abertos da ANTT
 │   │   │   ├── portal.py       # Descoberta e download pelos caminhos permitidos
-│   │   │   └── monitriip.py    # Detecção de esquema e agregação de tarifas
+│   │   │   ├── monitriip.py    # Detecção de esquema e agregação de tarifas
+│   │   │   ├── monthly.py      # Série mensal por rota, classe e mês de viagem
+│   │   │   └── schedules.py    # Grade de horários interestaduais ("Horários - SIGMA")
+│   │   ├── gtfs/               # Feeds GTFS de órgãos e operadores
+│   │   │   ├── feeds.py        # Fontes conhecidas (ex.: ARTESP)
+│   │   │   └── generic.py      # Leitura de horários e tarifas por linha
 │   │   └── road/
-│   │       ├── clickbus.py     # Coletor ClickBus (requer autorização do provedor)
+│   │       ├── clickbus.py     # Coletor ClickBus (desligado até a API B2B)
 │   │       └── taxonomy.py     # Normalização de classes (Leito, Semi-Leito, …)
 │   ├── geo/                    # Inteligência Geográfica
 │   │   ├── catchment.py        # Identificação de aeroportos/rodoviárias vizinhas
-│   │   └── entity_resolver.py  # Normalização de códigos IATA, ANTT e Nomes
+│   │   └── entity_resolver.py  # Códigos de hub (HUB:SAO), IATA/terminais e busca por nome
 │   ├── services/               # Orquestração do Pipeline de Dados
 │   │   ├── air_quotes.py       # Aéreo ao vivo: cache de consultas, orçamento e coalescência
+│   │   ├── road_quotes.py      # Ônibus estimado pela série da ANTT
+│   │   ├── gtfs_road_quotes.py # Ônibus a partir de horários e tarifas GTFS
 │   │   └── quote_pipeline.py   # Resolução canônica, transfer urbano, dedup e persistência
 │   ├── config.py               # Configurações centralizadas Pydantic Settings
 │   ├── database.py             # Sessões do SQLAlchemy 2.0 e migração leve de colunas
-│   └── models.py               # Modelos relacionais (Hub, Terminal, FareQuote, RouteMonthlyFare, ProviderQuery)
+│   └── models.py               # Hub, Terminal, FareQuote, RouteMonthlyFare, ProviderQuery, BusSchedule, GtfsRouteFare
 ├── frontend/                   # Aplicação Web Next.js 14
 │   ├── src/
 │   │   ├── app/                # App Router (page.tsx, layout.tsx, globals.css)
-│   │   ├── components/         # Header, SearchBar, TrustPillars, SkeletonCard
+│   │   ├── components/         # SearchBar, LocationAutocomplete, QuoteCard, HackerFareCard, ...
+│   │   ├── data/               # Cliente do autocomplete (localidades vêm só da API)
 │   │   ├── hooks/              # useSearchWebSocket (streaming reativo)
 │   │   └── types/              # Interfaces TypeScript unificadas
-│   └── public/                 # Ativos estáticos e logotipos oficiais
-├── scripts/                    # Scripts utilitários e de verificação
-│   ├── init_db.py              # Inicialização e carga inicial dos Hubs brasileiros
-│   ├── import_antt_fares.py    # Importa tarifas históricas reais da ANTT (Monitriip)
-│   ├── import_anac_fares.py    # Importa tarifas aéreas domésticas vendidas (régua da ANAC)
-│   ├── test_collector.py       # CLI Runner interativo com saída rica no terminal
-│   └── capture_preview.py      # Automação Playwright do frontend próprio (preview visual)
-├── tests/                      # Suíte completa de testes automatizados (223 testes)
-│   ├── fixtures/               # Resposta real do Ignav, com identificadores fictícios
+│   └── public/                 # Logotipos (logo_clean.png, logo_icon.png)
+├── scripts/                    # Seed, importadores e CLI (ver scripts/README.md)
+│   ├── init_db.py              # Cria as tabelas e carrega os hubs da semente
+│   ├── hub_candidates.py       # Hubs fora da semente (FLN, CNF, BSB), aplicados sob demanda
+│   ├── import_antt_fares.py    # Tarifas históricas reais da ANTT (Monitriip)
+│   ├── import_antt_schedules.py# Grade de horários interestaduais da ANTT
+│   ├── import_anac_fares.py    # Tarifas aéreas domésticas vendidas (régua da ANAC)
+│   ├── import_gtfs.py          # Importa um feed GTFS
+│   ├── report_hub_coverage.py  # Cobertura de dados rodoviários até os hubs
+│   └── test_collector.py       # A busca do site no terminal (mesmo /ws/search, sem gastar Ignav por padrão)
+├── tests/                      # Suíte completa de testes automatizados
+│   └── fixtures/               # Resposta real do Ignav, com identificadores fictícios
 ├── .env.example                # Template de configuração de variáveis de ambiente
 ├── .gitignore                  # Regras de exclusão para Git
-├── requirements.txt            # Dependências Python travadas
+├── requirements.txt            # Dependências Python
 └── roteiro_trivio.md           # Roteiro canônico e roadmap de desenvolvimento
 ```
 
@@ -369,6 +426,13 @@ trivio/
    - `BOT_INFO_URL` / `BOT_CONTACT_EMAIL` — identificam o robô do Trivio no `User-Agent`
      e dão aos sites um canal de contato. Veja *Política de Coleta de Dados* acima.
    - `DATABASE_URL` — troque para PostgreSQL em produção.
+   - `ENVIRONMENT` / `CORS_ORIGINS` — em produção, `ENVIRONMENT=production` e o domínio do frontend em
+     `CORS_ORIGINS`. O frontend local (`localhost:3000`) só é aceito em `development`. A mesma lista
+     vale para o WebSocket de busca.
+   - `DEBUG` — `false` por padrão. Ligado, um erro não tratado devolve o traceback ao cliente.
+   - `SEARCH_RATE_LIMIT_PER_HOUR` / `BOOKING_LINK_RATE_LIMIT_PER_HOUR` — buscas e links de compra por
+     IP por hora (padrão 30; `0` desliga). Atrás de proxy, rode o uvicorn com `--proxy-headers`.
+   - `SEARCH_MAX_DAYS_AHEAD` — até quantos dias à frente a data de ida é aceita (padrão 365).
 
    O `.env.example` traz todas as variáveis com os valores padrão.
 
@@ -376,8 +440,9 @@ trivio/
    ```bash
    python scripts/init_db.py
    ```
-   Os testes de WebSocket precisam desses hubs cadastrados. Para ter a régua aérea completa,
-   rode também `python scripts/import_anac_fares.py --months 12`.
+   A busca usa esses hubs; os testes não (criam um banco temporário próprio). Para ter a régua
+   aérea completa, rode também `python scripts/import_anac_fares.py --months 12`. A ordem completa
+   dos scripts está em [`scripts/README.md`](scripts/README.md).
 
    **Hubs fora da semente.** Os hubs de Florianópolis (FLN), Belo Horizonte (CNF) e Brasília (BSB)
    **não estão** em `scripts/init_db.py`, então não são carregados por padrão e não aparecem na busca
@@ -404,6 +469,17 @@ trivio/
    - Swagger / Documentação Interativa: `http://localhost:8000/docs`
    - Healthcheck: `http://localhost:8000/health`
    - WebSocket de busca: `ws://localhost:8000/ws/search`
+
+   **Códigos de origem e destino.** `HUB:CWB` é a cidade inteira (aeroportos e rodoviárias);
+   `CWB` sozinho é só o aeroporto Afonso Pena, porque vários hubs têm o mesmo código do próprio
+   aeroporto. Códigos sem terminal homônimo (`SAO`, `RIO`) também resolvem para a cidade. Um código
+   que não está cadastrado (ex.: `SSA`) é recusado, em vez de cair numa cidade parecida.
+
+   Para rodar a mesma busca no terminal, sem navegador:
+   ```bash
+   python scripts/test_collector.py --origin HUB:SAO --dest HUB:RIO --date 2026-12-18
+   ```
+   Sem `--live-air` o Ignav não é consultado; com ele, cada sentido gasta uma request paga.
 
 ---
 

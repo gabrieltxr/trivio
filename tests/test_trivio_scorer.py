@@ -1,12 +1,8 @@
 """Unit tests for Trivio Scorer (Agony Index) and Hacker Fares Combinator."""
 
 from datetime import datetime
-import pytest
 
 from app.analyzers.trivio_scorer import (
-    COMFORT_FACTORS,
-    HackerFareCombination,
-    TrivioScoreBreakdown,
     calculate_score_breakdown,
     calculate_trivio_score,
     determine_comfort_factor,

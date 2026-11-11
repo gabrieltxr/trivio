@@ -1,7 +1,6 @@
 """Testes unitários para o Smart Cache TTL Policy e Deduplicação Code-Share."""
 
 from datetime import date, datetime, timedelta, timezone
-import pytest
 
 from app.cache.ttl_policy import (
     TTLTier,
@@ -12,12 +11,8 @@ from app.cache.ttl_policy import (
     calculate_ttl,
     calculate_expiration_datetime,
     get_ttl_tier,
-    is_quote_expired,
 )
-from app.cache.deduplicator import (
-    QuoteDeduplicator,
-    deduplicate_quotes,
-)
+from app.cache.deduplicator import deduplicate_quotes
 from app.collectors.base import (
     StandardizedQuote,
     generate_dedup_signature,
@@ -86,8 +81,6 @@ def test_calculate_expiration_datetime():
     expected = ref_dt + timedelta(seconds=TTL_IMMINENT_SECONDS)
 
     assert expires_at == expected
-    assert not is_quote_expired(expires_at, current_time=ref_dt)
-    assert is_quote_expired(expires_at, current_time=expected + timedelta(seconds=1))
 
 
 # ==============================================================================

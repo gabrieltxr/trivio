@@ -47,3 +47,23 @@ def test_candidates_are_not_in_the_default_seed():
     default_names = {h["name"] for h in module.SEED_HUBS}
     for hub in hub_candidates.CANDIDATE_HUBS:
         assert hub["name"] not in default_names
+
+
+def test_every_hub_has_its_own_short_code():
+    """Todo hub da semente e dos candidatos precisa de código em HUB_METRO_CODES, sem repetição.
+
+    Sem isso o hub cai no padrão das 3 primeiras letras, que pode colidir com outro hub.
+    """
+    from app.geo.entity_resolver import HUB_METRO_CODES, normalize_text
+
+    seed_spec = importlib.util.spec_from_file_location(
+        "trivio_init_db", Path(__file__).resolve().parent.parent / "scripts" / "init_db.py"
+    )
+    init_db = importlib.util.module_from_spec(seed_spec)
+    seed_spec.loader.exec_module(init_db)
+
+    names = [h["name"] for h in init_db.SEED_HUBS + hub_candidates.CANDIDATE_HUBS]
+    missing = [n for n in names if normalize_text(n) not in HUB_METRO_CODES]
+    assert missing == []
+    codes = [HUB_METRO_CODES[normalize_text(n)] for n in names]
+    assert len(codes) == len(set(codes))

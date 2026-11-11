@@ -9,10 +9,10 @@ Responsável por:
    opções monomodais e destacando economias de até 60% com conforto.
 """
 
-from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta
+from dataclasses import dataclass
+from datetime import datetime
 import logging
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence
 
 from app.analyzers.route_evaluator import _is_madrugada, _to_brazil_time
 from app.config import settings
@@ -47,8 +47,6 @@ PENALTY_CONNECTION_DEFAULT = 40.0         # Conexão / baldeação comum
 PENALTY_MADRUGADA = 60.0                   # Embarque ou desembarque entre 01:00 e 04:59
 PENALTY_EXTRA_STOP_ROAD = 10.0             # Por parada adicional na rodovia acima de 2
 PENALTY_AIRPORT_SWAP = 80.0                # Troca de aeroporto na conexão (CGH <-> GRU)
-PENALTY_TIGHT_CONNECTION_CRITICAL = 100.0  # Conexão de alto risco (<50 min em hub)
-PENALTY_TIGHT_CONNECTION_WARNING = 50.0   # Conexão apertada (50 a 65 min em hub)
 
 
 @dataclass

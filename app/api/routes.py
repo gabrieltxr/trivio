@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
@@ -28,10 +28,11 @@ from app.api.schemas import (
     TerminalBase,
 )
 from app.analyzers.road_fare_projection import project_route_fare
+from app.api.rate_limit import booking_link_limiter, client_key
 from app.collectors.base import CollectorError
 from app.database import get_db
 from app.geo.catchment import CatchmentFinder
-from app.geo.entity_resolver import normalize_text
+from app.geo.entity_resolver import HUB_CODE_PREFIX, hub_metro_code, normalize_text
 from app.models import FareQuote, Hub, ModalType, Terminal
 from app.services.air_quotes import AirProviderUnavailableError, get_air_quote_service
 
@@ -124,23 +125,6 @@ def list_terminals(
 # 2.1 Autocomplete Unificado de Localidades (Hubs, Aeroportos e Rodoviárias)
 # ==============================================================================
 
-HUB_METRO_CODES = {
-    "sao paulo": "SAO",
-    "rio de janeiro": "RIO",
-    "curitiba": "CWB",
-    "porto alegre": "POA",
-    "campinas": "VCP",
-    "pelotas": "PET",
-    "rio grande": "RIG",
-    "belo horizonte": "BHZ",
-    "brasilia": "BSB",
-    "florianopolis": "FLN",
-    "salvador": "SSA",
-    "fortaleza": "FOR",
-    "recife": "REC",
-}
-
-
 @router.get(
     "/locations/autocomplete",
     response_model=List[LocationSuggestion],
@@ -159,6 +143,9 @@ def autocomplete_locations(
     """Busca em tempo real com tolerância a acentos, priorizando correspondências exatas e por sigla."""
     clean_q = normalize_text(query or "")
     upper_q = (query or "").strip().upper()
+    if upper_q.startswith(HUB_CODE_PREFIX):
+        upper_q = upper_q[len(HUB_CODE_PREFIX):]
+        clean_q = normalize_text(upper_q)
 
     # Busca todos os Hubs e Terminais com eager loading do Hub
     hubs = db.execute(select(Hub)).scalars().all()
@@ -169,7 +156,7 @@ def autocomplete_locations(
     # 1. Avalia Hubs
     for h in hubs:
         h_norm = normalize_text(h.name)
-        code = HUB_METRO_CODES.get(h_norm, h.name[:3].upper())
+        code = hub_metro_code(h.name)
         h_state = h.state.upper()
 
         score = 99
@@ -196,7 +183,7 @@ def autocomplete_locations(
                     name=h.name,
                     city=h.name,
                     state=h_state,
-                    code=code,
+                    code=f"{HUB_CODE_PREFIX}{code}",
                     modal="ALL",
                     title=f"{h.name}, {h_state}",
                     subtitle="Todos os aeroportos e rodoviárias (Hub Principal)",
@@ -453,6 +440,7 @@ def get_cached_quotes(
     response_class=RedirectResponse,
 )
 async def air_booking_link(
+    request: Request,
     ignav_id: str = Query(..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
     origin: str = Query(..., min_length=3, max_length=3),
     destination: str = Query(..., min_length=3, max_length=3),
@@ -464,6 +452,11 @@ async def air_booking_link(
 
     Fica em cache por 30 minutos e respeita o mesmo orçamento mensal das buscas.
     """
+    if not booking_link_limiter.allow(client_key(request.client)):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Limite de links de compra por hora atingido. Tente de novo mais tarde.",
+        )
     service = get_air_quote_service()
     try:
         url = await service.get_booking_url(

@@ -4,9 +4,9 @@
 > **Project Name:** Trivio (Trip + Via / Cruzamento de 3 caminhos: Ar, Terra e Melhor Custo-Benefício)  
 > **Domain:** Intermodal Travel Intelligence, Virtual Interlining & Price Aggregation (Brazil - National Scope)  
 > **Primary Stack:**
->   - **Backend & Collectors:** Python 3.11+, SQLAlchemy 2.0+, Httpx (REST/JSON), Protego (robots.txt compliance), Tenacity (Resilience), NetworkX (Virtual Interlining Graph), GeoPy & RapidFuzz (Geo & Entity Matching), Polars (Price Thermometer), Redis (Smart Cache & Ephemeral Quotes), FastAPI (REST + WebSockets Streaming)
+>   - **Backend & Collectors:** Python 3.11+, SQLAlchemy 2.0+, Httpx (REST/JSON), Protego (robots.txt compliance), Tenacity (Resilience), NetworkX (Virtual Interlining Graph), GeoPy & RapidFuzz (Geo & Entity Matching), Polars (Price Thermometer), FastAPI (REST + WebSockets Streaming)
 >   - **Frontend Web:** Next.js 14+ (App Router), React, TypeScript, Tailwind CSS, Lucide Icons
->   - **Persistence:** PostgreSQL / SQLite (Dev), Redis (Smart Cache & Look-to-Book Optimizer)
+>   - **Persistence:** PostgreSQL / SQLite (Dev). O cache de consultas pagas fica no próprio banco (tabela `provider_queries`); um cache externo (ex.: Redis) só entra quando houver mais de uma instância da API.
 
 ---
 
@@ -20,10 +20,10 @@
 2. **Mapeamento de Divergência de Rotas & Contratempos:** Identifica se uma viação faz rota expressa ou "pinga-pinga" (paradas intermediárias excessivas), trechos de serra/obras, ou conexões aéreas curtas com risco de perda de voo ou troca de aeroporto.
 3. **Coleta Identificada e em Conformidade:** Consumo assíncrono de APIs REST/JSON com `httpx`, sempre como um agente identificado (`TrivioBot/…` com canal de contato), verificando o `robots.txt` de cada host antes da requisição, respeitando `Crawl-delay` e `Retry-After`. **HTTP 401/403 é tratado como negativa definitiva do operador do site:** sem retentativa, sem navegador headless, sem contorno. Provedor que recusa acesso automatizado só é liberado por via comercial (API oficial ou programa de parceiros).
 4. **Streaming Progressivo (WebSockets):** As cotações não esperam todos os provedores terminarem; elas vão "pipocando" na interface em tempo real assim que cada modal ou empresa responde.
-5. **Smart Cache & TTL Dinâmico (Decolar Pattern):** TTL baseado na proximidade da viagem ($\le 2$ dias: 30 min; $> 21$ dias: 24 horas), eliminando 90% das requisições e blindando contra bloqueios de IP (*Look-to-Book optimization*).
-6. **Deduplicação & "Code-Share" Multi-Canal via SHA-256:** Agrupamento de ofertas idênticas comercializadas por múltiplos canais (ex: Guanabara vendida na ClickBus e DeÔnibus, voo Gol na Amadeus e Kiwi) usando assinatura `dedup_signature`, exibindo o canal mais barato.
+5. **Smart Cache & TTL Dinâmico (Decolar Pattern):** TTL baseado na proximidade da viagem ($\le 2$ dias: 30 min; $> 21$ dias: 24 horas), eliminando a maior parte das requisições repetidas, o que reduz o custo das APIs pagas e a carga sobre os provedores (*Look-to-Book optimization*).
+6. **Deduplicação & "Code-Share" Multi-Canal via SHA-256:** Agrupamento de ofertas idênticas comercializadas por múltiplos canais (ex: a mesma partida vendida por dois distribuidores, ou um voo em code-share) usando assinatura `dedup_signature`, exibindo o canal mais barato.
 7. **Virtual Interlining Intermodal (Kiwi.com Pattern):** Grafo em memória (`networkx`) que combina trechos rodoviários e aéreos independentes quando a conexão híbrida (ex: Ônibus até capital vizinha + Voo direto) supera o custo-benefício das rotas diretas tradicionais.
-8. **Hub Catchment Area / Raio Geográfico (Rome2Rio / Skyscanner Pattern):** Expansão geodésica (`geopy` / `h3`) que busca terminais alternativos em um raio configurável (ex: 100-120 km da cidade de origem/destino), somando o deslocamento terrestre na equação.
+8. **Hub Catchment Area / Raio Geográfico (Rome2Rio / Skyscanner Pattern):** Expansão geodésica (`geopy`) que busca terminais alternativos em um raio configurável (ex: 100-120 km da cidade de origem/destino), somando o deslocamento terrestre na equação.
 9. **Price Thermometer / Compra Preditiva (Hopper / Google Flights Pattern):** Análise estatística de séries históricas ($P_{25}, P_{50}, P_{75}$) via `polars` que classifica se a tarifa atual está *Barata*, *Na Média* ou *Cara* para aquela rota e época. A série de referência do rodoviário vem dos **dados abertos da ANTT (Monitriip)**: bilhetes efetivamente comercializados, publicados mensalmente sob CC-BY — preço transacionado real, não estimativa.
 10. **Intermodal Hacker Fares (Kayak Pattern):** Combinação assimétrica de bilhetes *one-way* independentes (ex: Ida de Avião para ganhar tempo + Volta de Ônibus Leito noturno para economizar diária e passagem).
 11. **Trivio Score / Índice de Atrito (Hipmunk "Agony Index" Pattern):** Algoritmo de ranqueamento que pondera Preço Efetivo + Tempo Porta a Porta + Penalidades de Atrito (madrugada, baldeações, excesso de paradas).
@@ -37,62 +37,61 @@ O agente no Antigravity deve criar e manter a seguinte árvore de diretórios no
 ```text
 trivio/
 ├── app/
-│   ├── __init__.py
 │   ├── config.py                  # Variáveis de ambiente (.env) e constantes do motor
-│   ├── database.py                # Configuração do SQLAlchemy Engine e SessionLocal
-│   ├── models.py                  # Modelos ORM (Hub, Terminal, ProviderMapping, FareQuote)
-│   ├── cache/                     # Camada de Smart Cache e Deduplicação (Decolar Pattern)
-│   │   ├── __init__.py
-│   │   ├── ttl_policy.py          # Cálculo de TTL dinâmico baseado na data de embarque
-│   │   └── deduplicator.py        # Merge de viagens idênticas entre múltiplos provedores (SHA-256)
+│   ├── database.py                # SQLAlchemy Engine, SessionLocal e migração leve de colunas
+│   ├── models.py                  # Hub, Terminal, ProviderMapping, FareQuote, RouteMonthlyFare, ProviderQuery, BusSchedule, GtfsRouteFare
+│   ├── cache/                     # Smart Cache e Deduplicação (Decolar Pattern)
+│   │   ├── ttl_policy.py          # TTL dinâmico baseado na data de embarque
+│   │   └── deduplicator.py        # Merge de viagens idênticas entre provedores (SHA-256)
 │   ├── geo/                       # Inteligência Geográfica e Resolução de Entidades
-│   │   ├── __init__.py
-│   │   ├── catchment.py           # Busca de terminais em raio geodésico (Rome2Rio Pattern)
-│   │   └── entity_resolver.py     # Fuzzy matching de nomes de cidades/terminais via RapidFuzz
+│   │   ├── catchment.py           # Terminais em raio geodésico (Rome2Rio Pattern)
+│   │   └── entity_resolver.py     # Fuzzy matching de cidades/terminais via RapidFuzz
 │   ├── api/                       # Camada de API e Streaming
-│   │   ├── __init__.py
-│   │   ├── main.py                # Inicialização FastAPI e middlewares CORS
-│   │   ├── routes.py              # Endpoints REST (cidades, terminais, cotações)
-│   │   └── websocket.py           # WebSocket Hub para streaming de cotações em tempo real
-│   ├── collectors/                # Motores de ingestão de preços (com Tenacity Retry)
-│   │   ├── __init__.py
-│   │   ├── base.py                # Contrato abstrato (BaseCollector) e DTO (StandardizedQuote)
+│   │   ├── main.py                # FastAPI, lifespan, CORS e tratamento de exceções
+│   │   ├── routes.py              # REST: hubs, terminais, autocomplete, catchment, aéreo e projeção rodoviária
+│   │   ├── schemas.py             # Schemas Pydantic v2
+│   │   └── websocket.py           # /ws/search: streaming de cotações em tempo real
+│   ├── collectors/                # Ingestão de preços e dados abertos
+│   │   ├── base.py                # BaseCollector, StandardizedQuote e retry (Tenacity)
 │   │   ├── compliance.py          # robots.txt (Protego), User-Agent identificado, ritmo e recusas
-│   │   ├── antt/                  # Dados abertos da ANTT (licença CC-BY)
-│   │   │   ├── portal.py          # Descoberta/download pelos caminhos que o robots.txt permite
-│   │   │   └── monitriip.py       # Detecção de esquema e agregação de tarifas históricas
-│   │   ├── road/                  # Coletores Rodoviários (requer autorização do provedor)
-│   │   │   ├── __init__.py
-│   │   │   └── taxonomy.py        # Classes de serviço (Leito, Semi-Leito, Convencional)
-│   │   └── air/                   # Coletores Aéreos (Amadeus, Duffel, Tequila, ANAC Microdados)
-│   │       └── __init__.py
-│   ├── services/                  # Orquestração de Pipeline de Dados
-│   │   ├── __init__.py
+│   │   ├── air/                   # Aéreo ao vivo: Ignav (API contratada), companhias e taxas de embarque
+│   │   ├── anac/                  # Microdados de tarifas aéreas da ANAC (régua do Termômetro)
+│   │   ├── antt/                  # Dados abertos da ANTT (CC-BY): Monitriip, série mensal e grade de horários
+│   │   ├── gtfs/                  # Feeds GTFS de órgãos/operadores (horário e tarifa por linha)
+│   │   └── road/                  # ClickBus (desligada até a API B2B) e taxonomia de classes
+│   ├── services/                  # Orquestração do Pipeline de Dados
+│   │   ├── air_quotes.py          # Aéreo: cache de consultas, orçamento de requests e coalescência
+│   │   ├── road_quotes.py         # Ônibus estimado pela série da ANTT
+│   │   ├── gtfs_road_quotes.py    # Ônibus a partir de horários e tarifas GTFS
 │   │   └── quote_pipeline.py      # Resolução canônica, transfer urbano, dedup e persistência
 │   └── analyzers/                 # Motores Analíticos, Grafos e Regras de Negócio
-│       ├── __init__.py
-│       ├── route_evaluator.py     # Geração de Prós, Contras e Contratempos da rota
-│       ├── trivio_scorer.py       # Cálculo do Trivio Score (Agony Index) e Hacker Fares
+│       ├── route_evaluator.py     # Prós, Contras e Contratempos da rota
+│       ├── trivio_scorer.py       # Trivio Score (Agony Index) e Hacker Fares
 │       ├── interliner.py          # Grafo NetworkX para conexões híbridas (Ônibus + Avião)
-│       └── price_thermometer.py   # Cálculo de percentis históricos de preço (Hopper Pattern)
+│       ├── price_thermometer.py   # Percentis históricos de preço (Hopper Pattern)
+│       ├── road_fare_projection.py# Projeção de tarifa rodoviária sobre a série da ANTT
+│       └── road_reference.py      # Faixa histórica de preço por rota e classe (ANTT), fora do ranking
 ├── frontend/                      # Aplicação Web (Next.js + React + Tailwind CSS)
 │   ├── src/
-│   │   ├── app/                   # App Router (Páginas, Layouts)
-│   │   ├── components/            # Cards de cotação, filtros, barra de busca intermodal
-│   │   ├── hooks/                 # useSearchWebSocket (streaming de passagens em tempo real)
-│   │   └── lib/                   # Utilitários de formatação e cálculo de custo real
-│   ├── package.json
-│   ├── tailwind.config.js
-│   └── tsconfig.json
+│   │   ├── app/                   # App Router (página, layout, estilos)
+│   │   ├── components/            # Cards de cotação, Hacker Fares, barra de busca, autocomplete
+│   │   ├── data/                  # Cliente do autocomplete (localidades vêm só da API)
+│   │   ├── hooks/                 # useSearchWebSocket (streaming em tempo real)
+│   │   └── types/                 # Contratos TypeScript da API e do WebSocket
+│   └── public/                    # Logotipos (logo_clean.png, logo_icon.png)
 ├── scripts/
-│   ├── init_db.py                 # Cria tabelas e executa seed inicial de localidades
-│   ├── import_antt_fares.py       # Importa tarifas históricas reais da ANTT (Monitriip)
-│   └── test_collector.py          # CLI runner (Rich) para testar busca, cache e ranking no terminal
-├── tests/
-│   └── __init__.py
+│   ├── init_db.py                 # Cria tabelas e faz o seed inicial de hubs e terminais
+│   ├── hub_candidates.py          # Hubs fora da semente (FLN, CNF, BSB), aplicados sob demanda
+│   ├── import_antt_fares.py       # Tarifas históricas reais da ANTT (Monitriip)
+│   ├── import_antt_schedules.py   # Grade de horários interestaduais da ANTT
+│   ├── import_anac_fares.py       # Tarifas aéreas domésticas vendidas (ANAC)
+│   ├── import_gtfs.py             # Importa um feed GTFS
+│   ├── report_hub_coverage.py     # Cobertura de dados rodoviários até os hubs
+│   └── test_collector.py          # CLI (Rich) que roda a busca real do /ws/search no terminal
+├── tests/                         # Suíte pytest (banco SQLite temporário em conftest.py)
 ├── .env.example
 ├── requirements.txt
-└── TRIVIO_SPEC.md
+└── roteiro_trivio.md
 ```
 
 ---
@@ -104,22 +103,20 @@ trivio/
 fastapi>=0.110.0
 uvicorn[standard]>=0.28.0
 websockets>=12.0
-redis>=5.0.0
 sqlalchemy>=2.0.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
+tzdata>=2024.1
 
 # HTTP, Compliance & Resilience
 httpx>=0.26.0
-protego>=0.3.0        # robots.txt (spec do Google: regra mais específica vence)
 tenacity>=8.2.0
-playwright>=1.41.0    # Apenas automação de preview visual do frontend próprio
+protego>=0.3.0   # Parser de robots.txt (spec do Google: regra mais específica vence)
 
 # Graph, Geo & Entity Resolution (Kiwi / Rome2Rio / Kayak Patterns)
 networkx>=3.2.0
 geopy>=2.4.0
-h3>=3.7.6
 rapidfuzz>=3.6.0
 
 # Data Analysis & Price Thermometer (Hopper Pattern)
@@ -254,7 +251,7 @@ Toda requisição a sites de terceiros passa pelo `CompliantHTTPClient`, que gar
    `access_denied` e devolve lista vazia. **Não existe escalonamento para navegador headless:**
    contornar a recusa seria evasão de detecção de bot.
 
-APIs oficiais e credenciadas (ex: Amadeus) usam `get_default_async_client`, que também se identifica,
+APIs oficiais e credenciadas (ex: Ignav) usam `get_default_async_client`, que também se identifica,
 mas dispensa a checagem de `robots.txt` por serem acessos contratados.
 
 **Estado dos provedores rodoviários:** a ClickBus proíbe no `robots.txt` as páginas de resultado
@@ -407,7 +404,7 @@ Siga a ordem exata das fases abaixo durante a implementação assistida no **Ant
 
 ### Phase 4: Virtual Interlining Graph & CLI Runner
 - [x] **Step 4.1:** Implementar `app/analyzers/interliner.py` usando `networkx` para construir rotas conectadas híbridas ($A \xrightarrow{\text{Ônibus}} H \xrightarrow{\text{Avião}} B$) respeitando janelas mínimas de conexão e tempo de deslocamento entre rodoviária e aeroporto.
-- [x] **Step 4.2:** Criar `scripts/test_collector.py` usando `rich` para exibir no terminal o comparativo completo da rota: Tabela de Preços Efetivos, Tempo Porta a Porta, Trivio Score, Termômetro de Preço e a Matriz de Prós/Contras/Contratempos.
+- [x] **Step 4.2:** Criar `scripts/test_collector.py` usando `rich` para exibir no terminal o comparativo completo da rota: Tabela de Preços Efetivos, Tempo Porta a Porta, Trivio Score, Termômetro de Preço, referência histórica da ANTT e Hacker Fares. A CLI roda a mesma busca do `/ws/search`, sem dados de demonstração; o Ignav só é consultado com `--live-air`.
 
 ### Phase 5: API Layer & Real-Time WebSockets Streaming
 - [x] **Step 5.1:** Implementar `app/api/main.py` com FastAPI, middlewares de CORS e tratamento de exceções.
@@ -419,6 +416,6 @@ Siga a ordem exata das fases abaixo durante a implementação assistida no **Ant
 
 ### Phase 6: Frontend Web Intermodal (Next.js + React + Tailwind CSS)
 - [x] **Step 6.1:** Inicializar projeto frontend com Next.js 14+ (App Router), TypeScript e Tailwind CSS.
-- [x] **Step 6.2:** Desenvolver a barra de busca intermodal (Origem, Destino, Data de Ida/Volta, Raio Geodésico, Filtro de Bagagem).
+- [x] **Step 6.2:** Desenvolver a barra de busca intermodal (Origem, Destino, Data de Ida/Volta, Valor da Hora e, na Conexão Híbrida, Raio Geodésico). A bagagem de 23kg entra sempre no custo efetivo do aéreo, sem filtro.
 - [x] **Step 6.3:** Implementar o hook `useSearchWebSocket` que conecta ao endpoint `/ws/search` do FastAPI, exibindo skeleton loaders e renderizando os cards de passagens progressivamente ("pipocando" na tela).
 - [x] **Step 6.4:** Desenvolver os cards de cotação com o comparativo de **Custo Efetivo Real vs. Tarifa Base**, badges de **Prós & Contras**, **Termômetro de Preço** e alertas visuais de **Contratempos de Rota** e **Conexões Híbridas (Virtual Interlining)**.

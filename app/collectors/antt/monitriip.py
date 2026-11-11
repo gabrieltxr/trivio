@@ -18,11 +18,10 @@ from dataclasses import dataclass, field
 import csv
 import logging
 import unicodedata
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import polars as pl
 
-from app.collectors.road.taxonomy import normalize_bus_service_class
 
 logger = logging.getLogger("trivio.collectors.antt.monitriip")
 

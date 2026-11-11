@@ -45,6 +45,22 @@ atexit.register(_cleanup)
 
 import pytest
 
+# "Hoje" fixo para a busca: as datas de viagem dos testes (nov/dez de 2026) continuam válidas
+# depois que passarem no calendário real.
+FROZEN_TODAY = __import__("datetime").date(2026, 11, 1)
+
+
+@pytest.fixture(autouse=True)
+def _frozen_search_today_and_fresh_limits(monkeypatch):
+    from app.api import rate_limit, websocket
+
+    monkeypatch.setattr(websocket, "_today", lambda: FROZEN_TODAY)
+    rate_limit.search_limiter.reset()
+    rate_limit.booking_link_limiter.reset()
+    yield
+    rate_limit.search_limiter.reset()
+    rate_limit.booking_link_limiter.reset()
+
 
 class AnttSeries:
     """Insere linhas da série ANTT no banco de teste; tudo é removido ao fim do teste."""

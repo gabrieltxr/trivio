@@ -7,7 +7,7 @@ and third-party provider terminal/city names to Trivio Hubs and Terminals.
 import unicodedata
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Dict, Any
+from typing import Optional, Dict
 from rapidfuzz import fuzz, process
 from sqlalchemy.orm import Session
 from app.models import Hub, Terminal, ModalType
@@ -26,6 +26,30 @@ class ResolvedEntity:
     confidence_score: float = 100.0
 
 
+# Prefixo que marca uma cidade inteira (hub) na busca. Sem ele, um código como "CWB" é o
+# aeroporto: vários hubs têm o mesmo código do próprio aeroporto (CWB, POA, VCP, PET, RIG).
+HUB_CODE_PREFIX = "HUB:"
+
+# Código curto de cada hub (fonte única para o autocomplete e para a resolução da busca).
+# Cobre a semente (scripts/init_db.py) e os candidatos (scripts/hub_candidates.py).
+HUB_METRO_CODES: Dict[str, str] = {
+    "sao paulo": "SAO",
+    "rio de janeiro": "RIO",
+    "curitiba": "CWB",
+    "porto alegre": "POA",
+    "campinas": "VCP",
+    "pelotas": "PET",
+    "rio grande": "RIG",
+    "belo horizonte": "BHZ",
+    "brasilia": "BSB",
+    "florianopolis": "FLN",
+}
+
+# Texto em formato de código (ex.: "SSA", "REC"). Se não for um terminal nem um hub
+# cadastrado, não passa pela busca aproximada: "SSA" não pode virar "São Paulo".
+_CODE_SHAPED = re.compile(r"[A-Z0-9]{2,6}")
+
+
 def normalize_text(text: str) -> str:
     """Normalize string by lowercasing, stripping accents, and removing excess whitespace."""
     if not text:
@@ -36,6 +60,12 @@ def normalize_text(text: str) -> str:
     # Remove special punctuation and lowercase
     cleaned = re.sub(r"[^\w\s]", " ", stripped).lower()
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def hub_metro_code(hub_name: str) -> str:
+    """Código curto do hub (ex.: 'SAO'); hubs fora da tabela usam as 3 primeiras letras."""
+    norm = normalize_text(hub_name)
+    return HUB_METRO_CODES.get(norm, norm.replace(" ", "")[:3].upper())
 
 
 class EntityResolver:
@@ -67,6 +97,26 @@ class EntityResolver:
                 longitude=terminal.longitude,
                 confidence_score=100.0,
             )
+        return None
+
+    def resolve_hub_code(self, code: str) -> Optional[ResolvedEntity]:
+        """Resolve o código curto de um hub ('SAO' ou 'HUB:SAO'), sem busca aproximada."""
+        clean = (code or "").strip().upper()
+        if clean.startswith(HUB_CODE_PREFIX):
+            clean = clean[len(HUB_CODE_PREFIX):]
+        if not clean:
+            return None
+        for hub in self.db.query(Hub).all():
+            if hub_metro_code(hub.name) == clean:
+                return ResolvedEntity(
+                    entity_type="HUB",
+                    id=hub.id,
+                    name=hub.name,
+                    state=hub.state,
+                    latitude=hub.latitude,
+                    longitude=hub.longitude,
+                    confidence_score=100.0,
+                )
         return None
 
     def resolve_hub(
@@ -165,12 +215,31 @@ class EntityResolver:
         return None
 
     def resolve_any(self, query: str, min_score: float = 70.0) -> Optional[ResolvedEntity]:
-        """Resolve query attempting Official Code -> Terminal -> Hub in order of precision."""
+        """Resolve a busca na ordem de precisão: hub explícito, código, nome do hub, terminal.
+
+        - 'HUB:CWB'  -> a cidade inteira (aeroportos e rodoviárias);
+        - 'CWB'      -> o terminal com esse código (aqui, o aeroporto);
+        - 'SAO'      -> código de hub sem terminal homônimo;
+        - 'SSA'      -> nada, se não estiver cadastrado (código não entra na busca aproximada);
+        - 'Curitiba' -> busca aproximada por nome.
+        """
+        clean = (query or "").strip()
+        if clean.upper().startswith(HUB_CODE_PREFIX):
+            return self.resolve_hub_code(clean)
+
         # 1. Code match (e.g. 'GRU')
-        direct = self.resolve_official_code(query)
+        direct = self.resolve_official_code(clean)
         if direct:
             return direct
 
+        metro = self.resolve_hub_code(clean)
+        if metro:
+            return metro
+
+        if _CODE_SHAPED.fullmatch(clean):
+            return None
+
+        query = clean
         # 2. Hub match (e.g. 'São Paulo', 'Curitiba')
         hub = self.resolve_hub(query, min_score=min_score)
         if hub and hub.confidence_score >= 85.0:

@@ -15,12 +15,14 @@ Responsável por:
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 import logging
+import math
 import time
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
@@ -34,6 +36,7 @@ from app.services.air_quotes import AirProviderUnavailableError, get_air_quote_s
 from app.collectors.air.ignav import IgnavBillingError
 from app.collectors.base import StandardizedQuote
 from app.analyzers.road_reference import build_road_references
+from app.api.rate_limit import client_key, search_limiter
 from app.collectors.road.clickbus import ClickBusCollector, CLICKBUS_SLUG_MAP
 from app.config import settings
 from app.database import SessionLocal
@@ -391,6 +394,41 @@ async def _emit_antt_road_batch(
 # 4. Orquestrador Principal de Busca em Streaming
 # ==============================================================================
 
+BRAZIL_TZ = ZoneInfo("America/Sao_Paulo")
+HOURLY_VALUE_RANGE = (0.0, 1000.0)   # R$/h aceitos para o valor do tempo
+RADIUS_KM_RANGE = (0.0, 500.0)       # raio geodésico aceito para a conexão híbrida
+
+
+def _today() -> date:
+    """Data de hoje no Brasil (fronteira das datas de viagem aceitas)."""
+    return datetime.now(BRAZIL_TZ).date()
+
+
+def _number_param(params: Dict[str, Any], key: str, default: float, bounds: Tuple[float, float], label: str) -> float:
+    """Lê um número da busca; ausente usa o padrão, inválido ou fora da faixa gera ValueError."""
+    raw = params.get(key)
+    if raw is None or raw == "":
+        return float(default)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} inválido: '{raw}'.")
+    low, high = bounds
+    if not math.isfinite(value) or not (low <= value <= high):
+        raise ValueError(f"{label} fora da faixa aceita ({low:g} a {high:g}).")
+    return value
+
+
+async def _send_search_error(websocket: WebSocket, session_id: str, message: str, reason: str) -> None:
+    await websocket.send_json({
+        "event": "SEARCH_ERROR",
+        "session_id": session_id,
+        "message": message,
+        "reason": reason,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+
 async def orchestrate_search(
     websocket: WebSocket,
     params: Dict[str, Any],
@@ -400,11 +438,27 @@ async def orchestrate_search(
     origin = str(params.get("origin", "")).strip()
     destination = str(params.get("destination", "")).strip()
     travel_date = str(params.get("date", "")).strip()
-    return_date = params.get("return_date")
-    hourly_value = float(params.get("hourly_value", settings.DEFAULT_HOURLY_TIME_VALUE_BRL))
-    radius_km = float(params.get("radius_km") or settings.DEFAULT_CATCHMENT_RADIUS_KM)
+    return_date = params.get("return_date") or None
+    try:
+        hourly_value = _number_param(
+            params, "hourly_value", settings.DEFAULT_HOURLY_TIME_VALUE_BRL, HOURLY_VALUE_RANGE, "Valor da hora",
+        )
+        radius_km = _number_param(
+            params, "radius_km", settings.DEFAULT_CATCHMENT_RADIUS_KM, RADIUS_KM_RANGE, "Raio de busca",
+        )
+    except ValueError as exc:
+        await _send_search_error(websocket, session_id, str(exc), "invalid_params")
+        return
     # Conexão ônibus + avião só quando o usuário pede (cada hub custa uma request do Ignav)
     enable_interlining = str(params.get("enable_virtual_interlining", False)).strip().lower() in ("true", "1", "yes")
+
+    # Cada busca pode gastar requests pagas do Ignav: limite por cliente
+    if not search_limiter.allow(client_key(websocket.client)):
+        await _send_search_error(
+            websocket, session_id,
+            "Limite de buscas por hora atingido. Tente de novo mais tarde.", "rate_limited",
+        )
+        return
 
     start_search_time = time.perf_counter()
 
@@ -430,13 +484,22 @@ def _validate_search_params(
     """Retorna uma mensagem de erro amigável se os parâmetros da busca forem inválidos."""
     if not origin or not destination:
         return "Informe a origem e o destino da viagem."
+    parsed: Dict[str, date] = {}
     for label, value in (("ida", travel_date), ("volta", return_date)):
         if label == "volta" and not value:
             continue
         try:
-            datetime.strptime(str(value), "%Y-%m-%d")
+            parsed[label] = datetime.strptime(str(value), "%Y-%m-%d").date()
         except ValueError:
             return f"Data de {label} inválida. Utilize o formato AAAA-MM-DD."
+    # Datas fora da janela não viram request paga ao Ignav
+    today = _today()
+    if parsed["ida"] < today:
+        return "A data de ida já passou."
+    if parsed["ida"] > today + timedelta(days=settings.SEARCH_MAX_DAYS_AHEAD):
+        return f"A data de ida pode ser no máximo {settings.SEARCH_MAX_DAYS_AHEAD} dias à frente."
+    if "volta" in parsed and parsed["volta"] < parsed["ida"]:
+        return "A data de volta não pode ser anterior à de ida."
     if not orig_hub:
         return f"Origem não reconhecida: '{origin}'."
     if not dest_hub:
@@ -476,6 +539,7 @@ async def _run_search(
             "event": "SEARCH_ERROR",
             "session_id": session_id,
             "message": validation_error,
+            "reason": "invalid_params",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
         return
@@ -750,6 +814,13 @@ async def _run_search(
 @router.websocket("/ws/search")
 async def websocket_search_endpoint(websocket: WebSocket):
     """Endpoint WebSocket para orquestração concorrente e streaming de passagens."""
+    # CORS não vale para WebSocket: sem esta checagem, qualquer site poderia abrir buscas
+    # (e gastar o Ignav) pelo navegador de quem o visita. Clientes sem Origin (CLI, testes) passam.
+    origin_header = websocket.headers.get("origin")
+    if origin_header and origin_header not in settings.allowed_origins():
+        logger.warning(f"WebSocket recusado para a origem {origin_header!r}.")
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     logger.info("Cliente conectado ao WebSocket de busca.")
 

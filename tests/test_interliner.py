@@ -1,16 +1,11 @@
 """Unit tests for Virtual Interlining Graph Engine (NetworkX)."""
 
 from datetime import datetime, timedelta
-import pytest
 
 from app.analyzers.interliner import (
     DEFAULT_INTERMODAL_TRANSFER_COST_BRL,
     DEFAULT_INTERMODAL_TRANSFER_MINUTES,
-    MIN_INTERMODAL_CONNECTION_MINUTES,
-    RECOMMENDED_SAFE_CONNECTION_MINUTES,
-    TransferLeg,
     VirtualInterlineRoute,
-    VirtualInterliningGraph,
     build_virtual_interline_routes,
     calculate_terminal_transfer,
 )

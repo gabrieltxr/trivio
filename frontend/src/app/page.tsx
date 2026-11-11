@@ -10,6 +10,7 @@ import HackerFareCard from "@/components/HackerFareCard";
 import SkeletonCard from "@/components/SkeletonCard";
 import { useSearchWebSocket, ProviderNotice } from "@/hooks/useSearchWebSocket";
 import { SearchParams } from "@/types";
+import { displayCode } from "@/data/locations";
 import {
   Sparkles,
   ArrowUpDown,
@@ -195,7 +196,7 @@ export default function Home() {
                 <div>
                   <div className="flex items-center gap-2">
                     <h2 className="text-lg font-black text-slate-950">
-                      {activeParams.origin} ➔ {activeParams.destination}
+                      {displayCode(activeParams.origin)} ➔ {displayCode(activeParams.destination)}
                     </h2>
                     <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-200/80 font-bold text-slate-700">
                       {quotes.length} {quotes.length === 1 ? "opção" : "opções"}
@@ -404,7 +405,7 @@ export default function Home() {
         ) : activeParams ? (
           /* Nenhuma opção encontrada */
           <div className="border border-slate-200 bg-slate-50 rounded-3xl p-12 text-center text-slate-600 text-sm">
-            Nenhuma rota disponível encontrada para {activeParams.origin} ➔ {activeParams.destination} na data selecionada.
+            Nenhuma rota disponível encontrada para {displayCode(activeParams.origin)} ➔ {displayCode(activeParams.destination)} na data selecionada.
           </div>
         ) : (
           /* Estado Inicial */

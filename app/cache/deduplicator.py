@@ -1,8 +1,9 @@
 """Módulo de Deduplicação de Cotações e Agrupamento Code-Share (Trivio Core).
 
-No ecossistema intermodal (rodoviário e aéreo), a mesma viagem física é frequentemente
-comercializada por múltiplos canais/brokers (ex: Viação Guanabara vendida na ClickBus,
-DeÔnibus e site próprio; ou voo Gol vendido via Amadeus, Decolar e Kiwi).
+No ecossistema intermodal (rodoviário e aéreo), a mesma viagem física pode ser
+comercializada por mais de um canal (ex.: a mesma partida em dois distribuidores, ou um
+voo em code-share). Hoje cada modal tem uma fonte só (ANTT/GTFS e Ignav), então o
+agrupamento serve sobretudo para descartar itinerários repetidos de um mesmo provedor.
 
 A chave de assinatura SHA-256 (modal, operadora, origem, destino, horário de partida e classe)
 permite agrupar essas ofertas idênticas, selecionar a opção de menor custo efetivo real
@@ -10,9 +11,7 @@ e anexar aos metadados o histórico de todos os vendedores com seus respectivos 
 destacando a economia gerada para o viajante.
 """
 
-from copy import copy
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, TypeVar
 
 from app.collectors.base import generate_dedup_signature
@@ -210,8 +209,3 @@ def deduplicate_quotes(
         attach_sellers_info=attach_sellers_info,
         sort_by_price=sort_by_price,
     )
-
-
-# Alias de conveniência
-Deduplicator = QuoteDeduplicator
-

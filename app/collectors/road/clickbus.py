@@ -25,10 +25,9 @@ vazia, e o Trivio exibe estimativas claramente rotuladas como simulação.
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 import logging
-import re
 from typing import Any, Dict, List, Optional
 
 import httpx

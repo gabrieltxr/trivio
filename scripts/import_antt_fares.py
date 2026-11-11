@@ -39,7 +39,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from rich.console import Console
 from rich.table import Table
-from sqlalchemy import select
 
 from app.collectors.antt import (
     ANTTOpenDataClient,

@@ -1,36 +1,41 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Trivio — Frontend
 
-## Getting Started
+Interface web do Trivio em Next.js 14 (App Router), TypeScript e Tailwind CSS. A visão geral do
+projeto, o backend e as fontes de dados estão no [README principal](../README.md).
 
-First, run the development server:
+## Rodar localmente
+
+O frontend depende da API do Trivio rodando (por padrão em `http://localhost:8000`).
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev        # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Antes de publicar, rode `npm run lint` e `npm run build` (o build também valida os tipos).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Variáveis de ambiente
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Variável | Padrão | Uso |
+|---|---|---|
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | API REST (autocomplete de localidades, projeção rodoviária) |
+| `NEXT_PUBLIC_WS_URL` | `ws://localhost:8000/ws/search` | WebSocket da busca |
 
-## Learn More
+Em produção, o domínio do frontend precisa estar em `CORS_ORIGINS` no backend: a mesma lista
+libera o REST e o WebSocket, que recusa conexões de outras origens.
 
-To learn more about Next.js, take a look at the following resources:
+## Estrutura
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Pasta | Conteúdo |
+|---|---|
+| `src/app/` | Página única (`page.tsx`), layout e estilos globais |
+| `src/components/` | Barra de busca, autocomplete, cards de cotação e de Hacker Fares, cabeçalho |
+| `src/hooks/useSearchWebSocket.ts` | Conexão com `/ws/search` e tratamento dos eventos da busca |
+| `src/data/locations.ts` | Cliente do autocomplete: as localidades vêm só da API |
+| `src/types/` | Contratos TypeScript da API e do WebSocket |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Códigos de localidade
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+A busca envia `HUB:<código>` para uma cidade inteira (aeroportos e rodoviárias) e o código do
+terminal (`CGH`, `TIETE`) para um terminal só. `CWB` sozinho é o aeroporto de Curitiba, não a
+cidade. As sugestões do autocomplete já trazem o código certo.

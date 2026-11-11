@@ -7,12 +7,8 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
 from app.models import Hub, ModalType, ProviderMapping, Terminal, FareQuote
-from app.collectors.base import StandardizedQuote, generate_dedup_signature
-from app.services.quote_pipeline import (
-    QuotePipeline,
-    find_terminal_by_external_id,
-    process_and_persist_quotes,
-)
+from app.collectors.base import StandardizedQuote
+from app.services.quote_pipeline import QuotePipeline, process_and_persist_quotes
 from app.analyzers.route_evaluator import evaluate_route
 
 
@@ -207,7 +203,7 @@ def test_simulated_and_interline_quotes_are_never_persisted(db_session):
         base_price=150.0,
     )
     simulated = StandardizedQuote(
-        provider_source="trivio_simulation",
+        provider_source="antt_projection",
         carrier_name="Ônibus Semi-Leito (estimativa)",
         route_metadata={"is_simulated": True},
         **common,

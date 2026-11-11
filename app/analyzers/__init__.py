@@ -24,7 +24,6 @@ from app.analyzers.route_evaluator import (
     diagnose_connections,
     enrich_quote_with_evaluation,
     evaluate_route,
-    filter_quotes_by_connection,
 )
 from app.analyzers.trivio_scorer import (
     COMFORT_FACTORS,
@@ -46,7 +45,6 @@ __all__ = [
     "diagnose_connections",
     "enrich_quote_with_evaluation",
     "evaluate_route",
-    "filter_quotes_by_connection",
     # Trivio Scorer & Hacker Fares
     "COMFORT_FACTORS",
     "HackerFareCombination",

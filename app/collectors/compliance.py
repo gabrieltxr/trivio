@@ -201,8 +201,6 @@ class RobotsPolicy:
         Motivos: 'allowed', 'disallowed' (regra explícita do site) ou
         'unreadable' (robots.txt inacessível — proibição por prudência).
         """
-        if not settings.RESPECT_ROBOTS_TXT:
-            return True, "allowed"
         entry = await self._entry_for(url)
         if entry.deny_all:
             return False, "unreadable"
@@ -271,10 +269,6 @@ class PolitenessLimiter:
 # Instâncias compartilhadas por processo (cache de robots e ritmo entre coletores)
 _shared_robots = RobotsPolicy()
 _shared_limiter = PolitenessLimiter()
-
-
-def get_robots_policy() -> RobotsPolicy:
-    return _shared_robots
 
 
 def parse_retry_after(value: Optional[str]) -> Optional[float]:

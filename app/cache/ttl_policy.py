@@ -116,30 +116,3 @@ def calculate_expiration_datetime(
     ttl_seconds = calculate_ttl(travel_date, reference_date=ref_date)
 
     return ref_dt + timedelta(seconds=ttl_seconds)
-
-
-def is_quote_expired(
-    expires_at: Union[datetime, str],
-    current_time: Union[datetime, None] = None,
-) -> bool:
-    """Verifica se um registro de cotação expirou.
-
-    Suporta datetimes naive e aware (com timezone).
-    """
-    if isinstance(expires_at, str):
-        exp_dt = datetime.fromisoformat(expires_at)
-    else:
-        exp_dt = expires_at
-
-    if current_time is None:
-        now_dt = datetime.now(timezone.utc) if exp_dt.tzinfo is not None else datetime.now()
-    else:
-        now_dt = current_time
-
-    # Normaliza se houver incompatibilidade entre aware e naive
-    if exp_dt.tzinfo is not None and now_dt.tzinfo is None:
-        now_dt = now_dt.replace(tzinfo=timezone.utc)
-    elif exp_dt.tzinfo is None and now_dt.tzinfo is not None:
-        exp_dt = exp_dt.replace(tzinfo=timezone.utc)
-
-    return now_dt >= exp_dt

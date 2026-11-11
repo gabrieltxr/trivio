@@ -13,16 +13,16 @@ import {
 } from "lucide-react";
 import { LocationSuggestion, LocationType } from "@/types";
 import {
+  displayCode,
   fetchLocationSuggestions,
-  getLocationByCode,
-  getPopularLocations,
+  getKnownLocation,
   normalizeSearchString,
-  searchLocalLocations,
+  resolveLocationCode,
 } from "@/data/locations";
 
 interface LocationAutocompleteProps {
   label: string;
-  value: string; // Código canônico (ex: "SAO", "CGH", "RIO")
+  value: string; // Código enviado na busca (ex: "HUB:SAO" para a cidade, "CGH" para o terminal)
   onChange: (code: string, item?: LocationSuggestion) => void;
   placeholder?: string;
   theme?: "cyan" | "orange";
@@ -50,6 +50,7 @@ export default function LocationAutocomplete({
   const [suggestions, setSuggestions] = useState<LocationSuggestion[]>([]);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
   const [isLoading, setIsLoading] = useState(false);
+  const [popular, setPopular] = useState<LocationSuggestion[]>([]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -63,21 +64,31 @@ export default function LocationAutocomplete({
 
   // Sincroniza a exibição amigável do campo a partir do código externo
   useEffect(() => {
-    if (value) {
-      const match = getLocationByCode(value);
-      if (match) {
-        setInputValue(match.title);
-      } else {
-        setInputValue(value);
-      }
-    } else {
+    if (!value) {
       setInputValue("");
+      return;
     }
+    const known = getKnownLocation(value);
+    if (known) {
+      setInputValue(known.title);
+      return;
+    }
+    setInputValue(displayCode(value));
+    let cancelled = false;
+    resolveLocationCode(value).then((match) => {
+      if (match && !cancelled) setInputValue(match.title);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [value]);
 
-  // Carrega sugestões populares ao inicializar
+  // Carrega as localidades principais (hubs e terminais cadastrados) ao inicializar
   useEffect(() => {
-    setSuggestions(getPopularLocations());
+    fetchLocationSuggestions("", 15).then((items) => {
+      setPopular(items);
+      setSuggestions((current) => (current.length ? current : items));
+    });
   }, []);
 
   // Resolve o texto digitado para uma localidade: código exato, nome/título exato
@@ -85,17 +96,19 @@ export default function LocationAutocomplete({
   const resolveTypedText = (text: string): LocationSuggestion | undefined => {
     const typed = text.trim();
     if (!typed) return undefined;
-    const byCode = getLocationByCode(typed);
+    const byCode = getKnownLocation(typed);
     if (byCode) return byCode;
     const norm = normalizeSearchString(typed);
+    const upper = typed.toUpperCase();
     const exact = suggestions.find(
       (s) =>
-        s.code.toUpperCase() === typed.toUpperCase() ||
+        s.code.toUpperCase() === upper ||
+        displayCode(s.code).toUpperCase() === upper ||
         normalizeSearchString(s.title) === norm ||
         normalizeSearchString(s.name) === norm
     );
     if (exact) return exact;
-    return suggestions[0] ?? searchLocalLocations(typed, 1)[0];
+    return suggestions[0];
   };
 
   // Confirma o que foi digitado sem clicar numa sugestão. Antes, o texto ficava só
@@ -104,8 +117,8 @@ export default function LocationAutocomplete({
     setIsOpen(false);
     setHighlightedIndex(-1);
 
-    const current = value ? getLocationByCode(value) : undefined;
-    const currentLabel = current ? current.title : value;
+    const current = value ? getKnownLocation(value) : undefined;
+    const currentLabel = current ? current.title : displayCode(value);
     if (value && inputValue === currentLabel) return; // nada mudou
 
     if (!inputValue.trim()) {
@@ -142,41 +155,29 @@ export default function LocationAutocomplete({
     };
   }, []);
 
-  // Executa a busca local instantânea e agenda busca na API
+  // Busca na API (debounced): só localidades cadastradas no banco
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const text = e.target.value;
     setInputValue(text);
     setIsOpen(true);
     setHighlightedIndex(-1);
 
-    // 1. Resposta instantânea (0ms) via base canônica local
-    const instantResults = text.trim()
-      ? searchLocalLocations(text, 10)
-      : getPopularLocations();
-    setSuggestions(instantResults);
-
-    // 2. Busca debounced assíncrona para enriquecer com o backend FastAPI
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
 
-    if (text.trim().length >= 1) {
-      setIsLoading(true);
-      debounceTimerRef.current = setTimeout(async () => {
-        try {
-          const apiResults = await fetchLocationSuggestions(text, 12);
-          if (apiResults && apiResults.length > 0) {
-            setSuggestions(apiResults);
-          }
-        } catch {
-          // Mantém as sugestões locais em caso de erro de rede
-        } finally {
-          setIsLoading(false);
-        }
-      }, 150);
-    } else {
+    if (!text.trim()) {
+      setSuggestions(popular);
       setIsLoading(false);
+      return;
     }
+
+    setIsLoading(true);
+    debounceTimerRef.current = setTimeout(async () => {
+      const apiResults = await fetchLocationSuggestions(text, 12);
+      setSuggestions(apiResults);
+      setIsLoading(false);
+    }, 150);
   };
 
   const handleSelect = (item: LocationSuggestion) => {
@@ -190,7 +191,7 @@ export default function LocationAutocomplete({
     e.stopPropagation();
     setInputValue("");
     onChange("");
-    setSuggestions(getPopularLocations());
+    setSuggestions(popular);
     setIsOpen(true);
     inputRef.current?.focus();
   };
@@ -287,7 +288,7 @@ export default function LocationAutocomplete({
                   : "bg-orange-50 text-orange-700 border border-orange-200/60"
               }`}
             >
-              {value}
+              {displayCode(value)}
             </span>
           )}
         </label>
@@ -303,7 +304,7 @@ export default function LocationAutocomplete({
               // Seleciona o texto atual: digitar substitui em vez de acrescentar ao valor anterior
               inputRef.current?.select();
               if (!inputValue.trim()) {
-                setSuggestions(getPopularLocations());
+                setSuggestions(popular);
               }
             }}
             onClick={(e) => e.currentTarget.select()}
