@@ -379,6 +379,24 @@ trivio/
    Os testes de WebSocket precisam desses hubs cadastrados. Para ter a régua aérea completa,
    rode também `python scripts/import_anac_fares.py --months 12`.
 
+   **Hubs fora da semente.** Os hubs de Florianópolis (FLN), Belo Horizonte (CNF) e Brasília (BSB)
+   **não estão** em `scripts/init_db.py`, então não são carregados por padrão e não aparecem na busca
+   de uma instalação nova. Eles estão em `scripts/hub_candidates.py` e são aplicados explicitamente:
+   ```bash
+   python scripts/hub_candidates.py --check   # valida a lista, sem gravar
+   python scripts/hub_candidates.py --apply   # grava os que ainda não existem
+   ```
+   A aplicação é idempotente. Os dados das rodoviárias desses hubs (nomes e coordenadas) são
+   aproximações e precisam de confirmação antes de uso em produção.
+
+   **Dados rodoviários.** O ônibus da busca vem de três fontes, todas importadas por script:
+   - ANTT, tarifas (projeção sobre a série de vendas): `scripts/import_anac_fares.py` e `scripts/import_antt_fares.py`;
+   - ANTT, grade de horários das linhas interestaduais: `python scripts/import_antt_schedules.py --file <CSV "Horários - SIGMA">`;
+   - GTFS de um órgão ou operador (horário e tarifa regulada por linha): `python scripts/import_gtfs.py --feed artesp --file <zip>`.
+     As fontes conhecidas ficam em `app/collectors/gtfs/feeds.py`.
+
+   Para avaliar quais cidades têm dados até os hubs atuais, rode `python scripts/report_hub_coverage.py --out relatorio.csv`.
+
 6. Inicie o servidor FastAPI:
    ```bash
    uvicorn app.api.main:app --reload --port 8000
