@@ -51,7 +51,6 @@ export interface SearchParams {
   trip_type: TripType;
   hourly_value: number;
   radius_km: number;
-  include_baggage: boolean;
   enable_virtual_interlining: boolean;
 }
 

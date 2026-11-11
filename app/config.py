@@ -20,9 +20,17 @@ class Settings(BaseSettings):
     # General App Settings
     PROJECT_NAME: str = "Trivio"
     ENVIRONMENT: str = "development"
-    DEBUG: bool = True
+    # Com DEBUG ligado, um erro não tratado devolve o traceback ao cliente. Só para depurar.
+    DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
     CORS_ORIGINS: List[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+
+    # Limite por IP de buscas e de links de compra por hora (cada um pode gastar request paga
+    # do Ignav). 0 desliga. Atrás de proxy, rode o uvicorn com --proxy-headers para o IP real.
+    SEARCH_RATE_LIMIT_PER_HOUR: int = 30
+    BOOKING_LINK_RATE_LIMIT_PER_HOUR: int = 30
+    # Busca aceita ida de hoje até este número de dias à frente.
+    SEARCH_MAX_DAYS_AHEAD: int = 365
 
     # Database Configuration
     DATABASE_URL: str = "sqlite:///./trivio_dev.db"
@@ -35,12 +43,7 @@ class Settings(BaseSettings):
     BOT_VERSION: str = "1.0"
     BOT_INFO_URL: str = ""        # Ex: https://trivio.com.br/bot
     BOT_CONTACT_EMAIL: str = ""   # Ex: bot@trivio.com.br
-    RESPECT_ROBOTS_TXT: bool = True
     DEFAULT_CRAWL_DELAY_SECONDS: float = 2.0  # Usado quando o robots.txt não declara Crawl-delay
-
-    # Cache Configuration (Smart Cache & Redis)
-    REDIS_URL: Optional[str] = None
-    CACHE_DEFAULT_TTL_SECONDS: int = 1800  # 30 minutes fallback
 
     # Engine Heuristics & Mathematical Defaults (Trivio Score & Geodesic Radius)
     DEFAULT_HOURLY_TIME_VALUE_BRL: float = 35.0  # R$ 35,00/h base
@@ -86,6 +89,16 @@ class Settings(BaseSettings):
             return None
         cleaned = str(value).strip()
         return cleaned or None
+
+
+    def allowed_origins(self) -> List[str]:
+        """Origens aceitas pelo CORS e pelo WebSocket. O frontend local só entra em desenvolvimento."""
+        origins = list(self.CORS_ORIGINS)
+        if self.ENVIRONMENT == "development":
+            for local in ("http://localhost:3000", "http://127.0.0.1:3000"):
+                if local not in origins:
+                    origins.append(local)
+        return origins
 
 
 @lru_cache()

@@ -246,7 +246,6 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
             return_date: params.return_date,
             hourly_value: params.hourly_value,
             radius_km: params.radius_km,
-            include_baggage: params.include_baggage,
             enable_virtual_interlining: params.enable_virtual_interlining,
           })
         );

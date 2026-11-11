@@ -52,17 +52,6 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def check_db_connection() -> bool:
-    """Utility to quickly verify database connectivity."""
-    try:
-        with engine.connect() as conn:
-            from sqlalchemy import text
-            conn.execute(text("SELECT 1"))
-        return True
-    except Exception:
-        return False
-
-
 # Colunas acrescentadas depois da criação inicial das tabelas. O projeto não usa
 # Alembic; create_all() não altera tabelas existentes, então as acrescentamos aqui.
 _ADDED_COLUMNS = {

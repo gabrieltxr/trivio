@@ -7,10 +7,8 @@ import pytest
 
 from app.collectors.base import (
     BaseCollector,
-    CollectorBlockedError,
     CollectorNotAuthorizedError,
     RobotsDisallowedError,
-    CollectorError,
     CollectorNetworkError,
     CollectorParsingError,
     CollectorRateLimitError,
@@ -82,7 +80,7 @@ def test_is_transient_error_classification():
     assert is_transient_error(httpx.HTTPStatusError("Service Unavailable", request=request, response=resp_503)) is True
 
     # Erros NÃO transitórios (não devem sofrer retry cego)
-    assert is_transient_error(CollectorBlockedError("403 Cloudflare challenge")) is False
+    assert is_transient_error(CollectorNotAuthorizedError("HTTP 403: acesso automatizado recusado")) is False
     assert is_transient_error(CollectorParsingError("Invalid JSON structure")) is False
     assert is_transient_error(ValueError("Invalid argument")) is False
 
@@ -138,9 +136,9 @@ async def test_collector_retry_fails_immediately_on_non_transient():
     async def blocked_api():
         nonlocal attempts
         attempts += 1
-        raise CollectorBlockedError("Cloudflare Turnstile 403")
+        raise CollectorNotAuthorizedError("HTTP 403: acesso automatizado recusado")
 
-    with pytest.raises(CollectorBlockedError):
+    with pytest.raises(CollectorNotAuthorizedError):
         await blocked_api()
 
     # Não deve tentar mais de uma vez

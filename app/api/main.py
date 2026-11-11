@@ -11,16 +11,6 @@ Configura:
 6. Inclusão dos roteadores REST e WebSocket da API v1.
 """
 
-import sys
-import asyncio
-
-# No Windows, define ProactorEventLoop como política padrão para suportar subprocessos do Playwright
-if sys.platform == "win32":
-    try:
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    except Exception:
-        pass
-
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
@@ -36,7 +26,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy import text
 
 from app.config import settings
-from app.database import engine, Base, ensure_schema
+from app.database import engine, ensure_schema
 
 logger = logging.getLogger("trivio.api")
 
@@ -131,11 +121,7 @@ class ProcessTimeMiddleware(BaseHTTPMiddleware):
 app.add_middleware(ProcessTimeMiddleware)
 
 # Configuração de CORS para permitir requisições do frontend Next.js
-allowed_origins = list(settings.CORS_ORIGINS)
-if "http://localhost:3000" not in allowed_origins:
-    allowed_origins.append("http://localhost:3000")
-if "http://127.0.0.1:3000" not in allowed_origins:
-    allowed_origins.append("http://127.0.0.1:3000")
+allowed_origins = settings.allowed_origins()
 
 app.add_middleware(
     CORSMiddleware,

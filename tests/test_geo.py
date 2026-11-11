@@ -139,3 +139,28 @@ def test_catchment_finder(db_session):
     assert 70.0 <= vcp.distance_km <= 110.0
     # Transfer cost to VCP from SP should reflect intercity transfer
     assert vcp.estimated_transfer_cost_brl > 50.0
+
+
+def test_hub_prefix_resolves_whole_city_even_when_airport_shares_the_code(db_session):
+    """'VCP' é Viracopos; 'HUB:VCP' é Campinas inteira (aeroporto e rodoviária)."""
+    resolver = EntityResolver(db_session)
+    airport = resolver.resolve_any("VCP")
+    assert airport.entity_type == "TERMINAL" and airport.official_code == "VCP"
+    city = resolver.resolve_any("HUB:VCP")
+    assert city.entity_type == "HUB" and city.name == "Campinas"
+
+
+def test_hub_metro_code_without_terminal_resolves_to_hub(db_session):
+    resolver = EntityResolver(db_session)
+    res = resolver.resolve_any("SAO")
+    assert res.entity_type == "HUB" and res.name == "São Paulo"
+
+
+def test_unknown_code_is_not_fuzzy_matched_to_another_city(db_session):
+    """Salvador (SSA) e Recife (REC) não estão cadastrados: não podem virar São Paulo/Campinas."""
+    resolver = EntityResolver(db_session)
+    assert resolver.resolve_any("SSA") is None
+    assert resolver.resolve_any("REC") is None
+    assert resolver.resolve_any("HUB:SSA") is None
+    # Nome por extenso continua passando pela busca aproximada
+    assert resolver.resolve_any("Sao Paulo").name == "São Paulo"

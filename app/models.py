@@ -80,7 +80,7 @@ class ProviderMapping(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     terminal_id = Column(Integer, ForeignKey("terminals.id"), nullable=False)
-    provider_name = Column(String(50), nullable=False, index=True)  # Ex: 'clickbus', 'rjconsultores', 'amadeus'
+    provider_name = Column(String(50), nullable=False, index=True)  # Ex: 'ignav', 'clickbus'
     external_id = Column(String(100), nullable=False)               # Ex: 'sao-paulo-tiete-sp' ou '4812'
 
     terminal = relationship("Terminal", back_populates="provider_mappings")
@@ -103,7 +103,7 @@ class FareQuote(Base):
     destination_terminal_id = Column(Integer, ForeignKey("terminals.id"), nullable=False, index=True)
     
     modal = Column(SQLEnum(ModalType), nullable=False, index=True)
-    provider_source = Column(String(50), nullable=False)  # Quem forneceu o dado (ex: 'amadeus', 'j3_gateway')
+    provider_source = Column(String(50), nullable=False)  # Quem forneceu o dado (ex: 'ignav')
     carrier_name = Column(String(100), nullable=False)    # Quem opera (ex: 'Azul', 'Viação Guanabara')
     service_class = Column(String(50))                    # Ex: 'ECONOMY', 'SEMI_LEITO', 'LEITO'
     

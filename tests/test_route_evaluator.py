@@ -1,14 +1,8 @@
 """Testes unitários para o avaliador de rotas (Prós, Contras, Contratempos e Diagnóstico de Conexões)."""
 
 from datetime import datetime
-import pytest
 
-from app.analyzers.route_evaluator import (
-    RouteEvaluator,
-    enrich_quote_with_evaluation,
-    evaluate_route,
-    filter_quotes_by_connection,
-)
+from app.analyzers.route_evaluator import enrich_quote_with_evaluation, evaluate_route
 from app.collectors.base import StandardizedQuote
 
 
@@ -192,48 +186,6 @@ def test_tight_connection_warning_in_bsb():
 
     cons_text = " ".join(meta["cons"])
     assert "Conexão curta (55 min) em BSB" in cons_text
-
-
-def test_filter_quotes_by_connection_preference():
-    """Valida o filtro inteligente de preferências ocultando voos com conexão suicida."""
-    # 1. Voo Direto
-    q_direct = StandardizedQuote(
-        origin_external_id="CGH", destination_external_id="SDU", modal="AIR",
-        provider_source="amadeus", carrier_name="Gol", service_class="ECONOMY",
-        departure_time=datetime(2026, 11, 20, 8, 0), arrival_time=datetime(2026, 11, 20, 9, 10),
-        duration_minutes=70, base_price=300.0, route_metadata={"is_direct": True, "stops_count": 0},
-    )
-    # 2. Voo com conexão crítica de 40 min em GRU
-    q_critical = StandardizedQuote(
-        origin_external_id="POA", destination_external_id="SDU", modal="AIR",
-        provider_source="amadeus", carrier_name="Gol", service_class="ECONOMY",
-        departure_time=datetime(2026, 11, 20, 6, 0), arrival_time=datetime(2026, 11, 20, 9, 30),
-        duration_minutes=210, base_price=280.0,
-        route_metadata={"is_direct": False, "stops_count": 1, "layover_details": [{"airport": "GRU", "duration_minutes": 40}]},
-    )
-    # 3. Voo com conexão confortável de 90 min em CNF
-    q_safe = StandardizedQuote(
-        origin_external_id="POA", destination_external_id="SDU", modal="AIR",
-        provider_source="amadeus", carrier_name="Azul", service_class="ECONOMY",
-        departure_time=datetime(2026, 11, 20, 6, 0), arrival_time=datetime(2026, 11, 20, 10, 30),
-        duration_minutes=270, base_price=320.0,
-        route_metadata={"is_direct": False, "stops_count": 1, "layover_details": [{"airport": "CNF", "duration_minutes": 90}]},
-    )
-
-    all_quotes = [
-        enrich_quote_with_evaluation(q_direct),
-        enrich_quote_with_evaluation(q_critical),
-        enrich_quote_with_evaluation(q_safe),
-    ]
-
-    # Filtrar ocultando conexões críticas ou menores que 60 min
-    safe_quotes = filter_quotes_by_connection(all_quotes, min_connection_minutes=60, exclude_critical=True)
-
-    # Devem restar apenas o voo direto e o voo com 90 min em CNF
-    assert len(safe_quotes) == 2
-    assert q_critical not in safe_quotes
-    assert q_direct in safe_quotes
-    assert q_safe in safe_quotes
 
 
 # ==============================================================================

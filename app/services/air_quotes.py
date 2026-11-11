@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.cache.ttl_policy import calculate_ttl
-from app.collectors.air.ignav import IgnavCollector, IgnavRequestError, PROVIDER_NAME
+from app.collectors.air.ignav import IgnavCollector, IgnavRequestError
 from app.collectors.base import CollectorError, StandardizedQuote
 from app.config import settings
 from app.database import SessionLocal

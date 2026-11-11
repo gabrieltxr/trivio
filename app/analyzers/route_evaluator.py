@@ -12,11 +12,10 @@ Analisa heurísticas intermodais para gerar transparência ao viajante:
 from dataclasses import dataclass, field
 from datetime import datetime, time
 import logging
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("trivio.analyzers.route_evaluator")
 
-T = TypeVar("T")
 
 # Grandes hubs brasileiros de alta complexidade e tráfego intenso
 MAJOR_BRAZILIAN_HUBS = {"GRU", "GIG", "BSB", "CNF", "VCP", "CGH"}
@@ -502,36 +501,3 @@ def enrich_quote_with_evaluation(quote: Any) -> Any:
     """Função utilitária para enriquecer cotação com prós, contras e contratempos."""
     return RouteEvaluator.enrich_quote(quote)
 
-
-def filter_quotes_by_connection(
-    quotes: Sequence[T],
-    min_connection_minutes: int = 50,
-    exclude_critical: bool = True,
-) -> List[T]:
-    """Filtro inteligente de preferências: oculta opções com conexões arriscadas ou suicidas.
-
-    Args:
-        quotes: Coleção de cotações avaliadas.
-        min_connection_minutes: Tempo mínimo aceitável de conexão em minutos.
-        exclude_critical: Se True, descarta qualquer opção classificada com severidade CRITICAL.
-    """
-    filtered: List[T] = []
-    for q in quotes:
-        meta = _get_val(q, "route_metadata", {}) or {}
-        diag = meta.get("connection_diagnostics")
-        if not diag or not diag.get("has_connection"):
-            filtered.append(q)
-            continue
-
-        worst_sev = diag.get("worst_severity")
-        tightest = diag.get("tightest_layover_minutes")
-
-        if exclude_critical and worst_sev == "CRITICAL":
-            continue
-
-        if tightest is not None and tightest < min_connection_minutes:
-            continue
-
-        filtered.append(q)
-
-    return filtered

@@ -13,18 +13,14 @@ Responsável por:
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
 import logging
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from geopy.distance import geodesic
 import networkx as nx
-from sqlalchemy.orm import Session
 
-from app.analyzers.route_evaluator import RouteEvaluator
 from app.analyzers.trivio_scorer import calculate_score_breakdown
-from app.collectors.base import StandardizedQuote, generate_dedup_signature
-from app.config import settings
+from app.collectors.base import StandardizedQuote
 from app.models import Terminal
 
 logger = logging.getLogger("trivio.analyzers.interliner")
@@ -36,7 +32,6 @@ logger = logging.getLogger("trivio.analyzers.interliner")
 MIN_INTERMODAL_CONNECTION_MINUTES = 120      # Mínimo absoluto (2 horas)
 RECOMMENDED_SAFE_CONNECTION_MINUTES = 180    # Janela segura recomendada (3 horas)
 MAX_INTERMODAL_CONNECTION_MINUTES = 720      # Máximo aceitável para o mesmo dia (12 horas)
-MIN_AIRPORT_CHECKIN_BUFFER = 90              # Antecedência necessária no aeroporto
 
 DEFAULT_INTERMODAL_TRANSFER_MINUTES = 45     # Tempo médio transfer urbano rodoviária -> aeroporto
 DEFAULT_INTERMODAL_TRANSFER_COST_BRL = 40.0  # Custo médio de transfer urbano (Uber/táxi/shuttle)

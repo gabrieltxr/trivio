@@ -20,11 +20,7 @@ from app.collectors.antt.monitriip import (
     normalize_place,
     read_csv_header,
 )
-from app.collectors.antt.monthly import (
-    TARIFA_NORMAL,
-    aggregate_monthly_fares,
-    check_date_consistency,
-)
+from app.collectors.antt.monthly import aggregate_monthly_fares, check_date_consistency
 from app.collectors.antt.portal import ANTTResource, parse_resource_links
 from app.collectors.base import StandardizedQuote
 from app.database import Base

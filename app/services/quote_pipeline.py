@@ -14,7 +14,7 @@ Responsável por:
 
 from datetime import datetime, timezone
 import logging
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -60,7 +60,7 @@ def find_terminal_by_external_id(
     return None
 
 
-NON_PERSISTABLE_PROVIDERS = {"trivio_simulation", "trivio_interliner", "antt_projection"}
+NON_PERSISTABLE_PROVIDERS = {"trivio_interliner", "antt_projection"}
 
 
 # Provedores de preço ao vivo cujos termos ainda não confirmamos para guardar histórico.

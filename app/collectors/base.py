@@ -3,35 +3,27 @@
 Todos os coletores (aéreos e rodoviários) seguem este contrato:
 1. Retornam instâncias de StandardizedQuote com assinatura determinística de deduplicação.
 2. Utilizam políticas de retentativa inteligente com Tenacity (exponential backoff com jitter).
-3. Implementam arquitetura de duas camadas: Tier 1 (HTTPX JSON assíncrono) com suporte a
-   Tier 2 (Fallback Headless / Playwright) em caso de bloqueios anti-bot severos.
+3. Usam HTTPX assíncrono; recusas de acesso encerram a coleta, sem navegador headless
+   nem contorno (ver app/collectors/compliance.py).
 """
 
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 import hashlib
 import logging
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar
+from typing import Any, Dict, List, Optional
 
 import httpx
 
-from app.collectors.compliance import (
-    ComplianceError,
-    NotAuthorizedError,
-    RobotsDisallowedError,
-    compliant_headers,
-)
+from app.collectors.compliance import NotAuthorizedError, RobotsDisallowedError, compliant_headers
 from tenacity import (
-    AsyncRetrying,
     RetryCallState,
     retry,
     retry_if_exception,
-    retry_if_exception_type,
     stop_after_attempt,
-    wait_exponential,
     wait_random_exponential,
 )
 
@@ -69,10 +61,6 @@ class CollectorNotAuthorizedError(CollectorError):
     A liberação é comercial (API oficial / programa de parceiros).
     """
     pass
-
-
-# Nome anterior, mantido como alias para compatibilidade de imports existentes.
-CollectorBlockedError = CollectorNotAuthorizedError
 
 
 class CollectorParsingError(CollectorError):
@@ -175,8 +163,8 @@ def generate_dedup_signature(
 ) -> str:
     """Gera chave única SHA-256 (32 caracteres) para identificar a viagem física.
     
-    A mesma viagem física comercializada por diferentes brokers (ex: Guanabara na
-    ClickBus vs. DeÔnibus, ou Gol na Amadeus vs. Kiwi) produzirá a mesma assinatura.
+    A mesma viagem física comercializada por canais diferentes (ex.: a mesma partida em
+    dois distribuidores) produz a mesma assinatura.
     """
     normalized_modal = str(modal).strip().upper()
     normalized_carrier = str(carrier_name).strip().upper()
@@ -202,7 +190,7 @@ class StandardizedQuote:
     origin_external_id: str
     destination_external_id: str
     modal: str                         # 'AIR' ou 'ROAD'
-    provider_source: str               # Quem vendeu/forneceu (ex: 'clickbus', 'amadeus', 'kiwi')
+    provider_source: str               # Quem forneceu o dado (ex: 'ignav', 'antt_projection', 'gtfs_artesp')
     carrier_name: str                  # Quem opera o transporte (ex: 'Viação Guanabara', 'Gol', 'Azul')
     service_class: str                 # 'ECONOMY', 'SEMI_LEITO', 'LEITO', 'CONVENCIONAL'
     departure_time: datetime

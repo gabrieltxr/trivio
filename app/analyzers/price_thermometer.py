@@ -11,7 +11,7 @@ sobre o histórico de cotações armazenadas no banco, classificando cada oferta
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import polars as pl
 from sqlalchemy import select

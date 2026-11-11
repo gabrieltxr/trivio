@@ -3,10 +3,9 @@
 from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 
 from app.analyzers.price_thermometer import (
-    PriceThermometerResult,
     enrich_quote_with_thermometer,
     enrich_quotes_batch_with_thermometer,
     evaluate_price_distribution,

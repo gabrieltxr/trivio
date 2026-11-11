@@ -1,7 +1,7 @@
 """Grade de horários da ANTT: leitura do CSV e uso nas opções de ônibus da busca."""
 
 import importlib.util
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 
 import pytest

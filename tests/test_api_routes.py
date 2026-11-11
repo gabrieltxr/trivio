@@ -252,6 +252,12 @@ def test_autocomplete_locations(client):
     assert data_tiete[0]["type"] == "bus_station"
 
     # 4. Busca sem query (retorna destaques/populares)
+    # Hub usa o prefixo HUB: (o código curto sozinho pode ser o do aeroporto, ex.: CWB)
+    sp_hub = next(item for item in data_sp if item["type"] == "hub")
+    assert sp_hub["code"] == "HUB:SAO" and sp_hub["highlight"] == "SAO"
+    res_prefixed = client.get("/api/v1/locations/autocomplete?query=HUB:SAO")
+    assert res_prefixed.json()[0]["code"] == "HUB:SAO"
+
     res_empty = client.get("/api/v1/locations/autocomplete")
     assert res_empty.status_code == 200
     assert len(res_empty.json()) >= 1

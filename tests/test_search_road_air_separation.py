@@ -144,6 +144,29 @@ def test_airport_selected_never_brings_the_city_bus(mock_air, client, antt_serie
     assert not [q for q in _quotes(events) if q["modal"] == "ROAD"]
 
 
+@patch("app.services.air_quotes.AirQuoteService.get_quotes")
+def test_city_selected_brings_bus_even_when_airport_shares_its_code(mock_air, client, antt_series):
+    """Cidade escolhida (HUB:POA): ônibus e voo. 'POA' sozinho é o aeroporto Salgado Filho."""
+    antt_series.add("SAO PAULO-SP|PORTO ALEGRE-RS", "CONVENCIONAL", "2026-12", "2026-09", 100, 120.0)
+    mock_air.return_value = [_flight("CGH", "POA", datetime(2026, 12, 18, 10, 0))]
+
+    city = _search(client, "HUB:SAO", "HUB:POA", date="2026-12-18")
+    assert [q for q in _quotes(city) if q["modal"] == "ROAD"]
+    assert [q for q in _quotes(city) if q["modal"] == "AIR"]
+
+    airport = _search(client, "HUB:SAO", "POA", date="2026-12-18")
+    assert not [q for q in _quotes(airport) if q["modal"] == "ROAD"]
+
+
+@patch("app.services.air_quotes.AirQuoteService.get_quotes")
+def test_unregistered_city_code_is_rejected_not_swapped(mock_air, client):
+    """'SSA' (Salvador) não está cadastrado: a busca falha em vez de pesquisar São Paulo."""
+    mock_air.return_value = []
+    events = _search(client, "SSA", "RIO")
+    assert events[-1]["event"] == "SEARCH_ERROR"
+    mock_air.assert_not_called()
+
+
 @pytest.fixture
 def hub_without_airport():
     """Município só com rodoviária: o aéreo não pode ser consultado."""

@@ -5,7 +5,6 @@ Módulos de coletores rodoviários e aéreos, contratos abstratos e DTOs padroni
 
 from app.collectors.base import (
     BaseCollector,
-    CollectorBlockedError,
     CollectorError,
     CollectorNetworkError,
     CollectorNotAuthorizedError,
@@ -28,12 +27,10 @@ from app.collectors.compliance import (
     RobotsPolicy,
     build_user_agent,
     compliant_headers,
-    get_robots_policy,
 )
 
 __all__ = [
     "BaseCollector",
-    "CollectorBlockedError",
     "CollectorError",
     "CollectorNetworkError",
     "CollectorNotAuthorizedError",
@@ -55,5 +52,4 @@ __all__ = [
     "RobotsPolicy",
     "build_user_agent",
     "compliant_headers",
-    "get_robots_policy",
 ]

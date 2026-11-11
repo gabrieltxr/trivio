@@ -18,13 +18,14 @@ interface SearchBarProps {
   isLoading?: boolean;
 }
 
+// Cidade inteira usa o prefixo HUB: ("CWB" sozinho seria só o aeroporto de Curitiba).
 const POPULAR_HUBS = [
-  { code: "SAO", name: "São Paulo", state: "SP" },
-  { code: "RIO", name: "Rio de Janeiro", state: "RJ" },
-  { code: "CWB", name: "Curitiba", state: "PR" },
-  { code: "POA", name: "Porto Alegre", state: "RS" },
-  { code: "PET", name: "Pelotas", state: "RS" },
-  { code: "VCP", name: "Campinas", state: "SP" },
+  { code: "HUB:SAO", name: "São Paulo", state: "SP" },
+  { code: "HUB:RIO", name: "Rio de Janeiro", state: "RJ" },
+  { code: "HUB:CWB", name: "Curitiba", state: "PR" },
+  { code: "HUB:POA", name: "Porto Alegre", state: "RS" },
+  { code: "HUB:PET", name: "Pelotas", state: "RS" },
+  { code: "HUB:VCP", name: "Campinas", state: "SP" },
 ];
 
 export default function SearchBar({ onSearch, isLoading = false }: SearchBarProps) {
@@ -35,16 +36,18 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
   const defaultReturn = new Date(today);
   defaultReturn.setDate(today.getDate() + 9);
 
-  const formatDate = (d: Date) => d.toISOString().split("T")[0];
+  // Data local (toISOString usaria UTC e, à noite no Brasil, já seria o dia seguinte)
+  const formatDate = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const todayStr = formatDate(today);
 
   const [tripType, setTripType] = useState<TripType>("round_trip");
-  const [origin, setOrigin] = useState("SAO");
-  const [destination, setDestination] = useState("RIO");
+  const [origin, setOrigin] = useState("HUB:SAO");
+  const [destination, setDestination] = useState("HUB:RIO");
   const [date, setDate] = useState(formatDate(defaultDeparture));
   const [returnDate, setReturnDate] = useState(formatDate(defaultReturn));
   const [radiusKm, setRadiusKm] = useState(120);
   const [hourlyValue, setHourlyValue] = useState(35.0);
-  const [includeBaggage, setIncludeBaggage] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -73,7 +76,6 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
       trip_type: tripType,
       hourly_value: hourlyValue,
       radius_km: radiusKm,
-      include_baggage: includeBaggage,
       // Conexão ônibus + avião só no modo "Conexão Híbrida": cada hub consulta um voo pago no Ignav.
       enable_virtual_interlining: tripType === "intermodal",
     });
@@ -186,6 +188,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
                 <input
                   type="date"
                   value={date}
+                  min={todayStr}
                   onChange={(e) => setDate(e.target.value)}
                   className="w-full bg-transparent text-slate-900 font-bold text-xs sm:text-sm focus:outline-none cursor-pointer"
                   required
@@ -257,7 +260,11 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
 
           {/* 4. Painel de Filtros Avançados (Colapsável) */}
           {showAdvanced && (
-            <div className="pt-4 mt-4 border-t border-slate-200 grid grid-cols-1 md:grid-cols-3 gap-6 text-sm text-slate-700 animate-fadeIn">
+            <div
+              className={`pt-4 mt-4 border-t border-slate-200 grid grid-cols-1 ${
+                tripType === "intermodal" ? "md:grid-cols-3" : "md:grid-cols-2"
+              } gap-6 text-sm text-slate-700 animate-fadeIn`}
+            >
               
               {/* Valor da Hora */}
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
@@ -282,7 +289,8 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
                 </p>
               </div>
 
-              {/* Raio Geodésico */}
+              {/* Raio Geodésico: só a Conexão Híbrida usa (hubs com aeroporto perto da origem) */}
+              {tripType === "intermodal" && (
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                 <div className="flex justify-between items-center mb-2">
                   <label className="text-xs font-bold uppercase tracking-wider text-cyan-800 flex items-center gap-1.5">
@@ -308,23 +316,20 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
                   ))}
                 </div>
                 <p className="text-[11px] text-slate-500 mt-2">
-                  Localiza aeroportos e rodoviárias vizinhas (ex: Viracopos para SP).
+                  Distância máxima da origem até o hub onde o ônibus encontra o voo.
                 </p>
               </div>
+              )}
 
-              {/* Bagagem e Conexões Híbridas */}
-              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex flex-col justify-between gap-3">
-                <label className="flex items-center gap-2.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={includeBaggage}
-                    onChange={(e) => setIncludeBaggage(e.target.checked)}
-                    className="w-4 h-4 rounded text-orange-500 accent-orange-500"
-                  />
-                  <span className="text-xs font-semibold text-slate-700">
-                    Incluir mala despachada de 23kg no cálculo de custo real
-                  </span>
-                </label>
+              {/* Bagagem: sempre no custo efetivo (o card mostra a linha da franquia) */}
+              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                <p className="text-xs font-bold uppercase tracking-wider text-cyan-800 mb-1">
+                  Bagagem
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  O custo efetivo do aéreo já inclui uma mala despachada de 23kg estimada. No ônibus,
+                  a bagagem no bagageiro é gratuita.
+                </p>
               </div>
 
             </div>

@@ -1,7 +1,6 @@
 """Importador genérico de GTFS, com um feed sintético em zip."""
 
 import importlib.util
-import io
 import zipfile
 from pathlib import Path
 
