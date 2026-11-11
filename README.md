@@ -134,8 +134,11 @@ Toda request ao Ignav é paga. Por isso, qualquer consulta passa pelo `AirQuoteS
 
 1. **Cache de consultas** (tabela `provider_queries`): consultas iguais válidas por até 2 h, ou
    30 min para voos próximos, respondem sem nova request. Consultas vazias também são guardadas.
-2. **Orçamento mensal** (`AIR_MONTHLY_REQUEST_BUDGET`, padrão 800): ao atingir o teto, o aéreo para
-   de consultar e a interface recebe um `PROVIDER_ERROR` com `reason: "budget_exhausted"`.
+2. **Saldo de requests** (`AIR_REQUESTS_REMAINING`, lido no painel do Ignav em
+   `AIR_REQUESTS_REMAINING_AS_OF`): o Trivio desconta as requests cobradas desde a leitura e, ao chegar
+   em `AIR_REQUESTS_SAFETY_MARGIN` (padrão 20), para de consultar e a interface recebe um
+   `PROVIDER_ERROR` com `reason: "budget_exhausted"`. O plano gratuito do Ignav tem 1.000 requests
+   únicas, que não renovam por mês.
 3. **Coalescência:** buscas idênticas simultâneas dividem uma única request.
 4. **Coletor** (`app/collectors/air/ignav.py`): uma chamada = uma request paga.
 
@@ -144,8 +147,8 @@ Motivos de falha informados ao frontend, em vez de uma lista vazia com aparênci
 | `reason` | Quando |
 |---|---|
 | `not_configured` | `IGNAV_API_KEY` ausente |
-| `disabled` | `AIR_MONTHLY_REQUEST_BUDGET=0` |
-| `budget_exhausted` | Teto mensal atingido (limite interno do Trivio, `AIR_MONTHLY_REQUEST_BUDGET`) |
+| `disabled` | `AIR_REQUESTS_REMAINING=0` |
+| `budget_exhausted` | Saldo estimado na margem de segurança (`AIR_REQUESTS_REMAINING` menos o cobrado desde a leitura) |
 | `billing_required` | Ignav respondeu HTTP 402: conta sem crédito ou sem cartão cadastrado. Não há retry; regularize no painel do Ignav |
 | `spend_limit_reached` | Ignav respondeu HTTP 429: teto de gasto mensal da própria conta Ignav atingido |
 | `provider_error` | Outro erro do provedor (timeout, 503, etc.) |
@@ -172,9 +175,9 @@ aérea é preferida quando oferece o voo exato.
 porque os termos de uso do provedor ainda não foram conferidos. Isso é controlado por
 `AIR_PERSIST_LIVE_QUOTES`.
 
-**Consumo.** `GET /api/v1/air/usage` mostra as requests usadas e as restantes no mês, contadas pelo
-próprio Trivio. Esse número não reflete o saldo de crédito do Ignav, que só aparece no painel do
-provedor.
+**Consumo.** `GET /api/v1/air/usage` mostra o saldo estimado: o valor lido no painel menos as requests
+cobradas desde então, contadas pelo próprio Trivio. Cada banco conta só as próprias requests; o saldo
+oficial é o do painel do Ignav, e vale atualizar `AIR_REQUESTS_REMAINING` ao conferi-lo.
 
 **Virtual Interlining.** O voo do hub só é consultado depois que o trecho de ônibus até o hub
 trouxe resultado. Assim, não se paga por uma rota híbrida que não se forma.
@@ -357,7 +360,8 @@ trivio/
    No `.env`, vale preencher:
    - `IGNAV_API_KEY` — chave da [Ignav Flight Prices API](https://ignav.com). **Sem ela o aéreo ao vivo
      fica desligado** (`reason: "not_configured"`). Ver *Preços aéreos ao vivo*.
-   - `AIR_MONTHLY_REQUEST_BUDGET` — teto de requests pagas por mês (padrão 800; `0` desliga o aéreo ao vivo).
+   - `AIR_REQUESTS_REMAINING` / `AIR_REQUESTS_REMAINING_AS_OF` — saldo do painel do Ignav e o momento da
+     leitura (UTC); `AIR_REQUESTS_SAFETY_MARGIN` — margem em que o aéreo para (padrão 20). `0` desliga.
    - `AIR_LIVE_CACHE_MAX_SECONDS` — validade máxima do cache de consultas aéreas (padrão 7200).
    - `AIR_PERSIST_LIVE_QUOTES` — `false` por padrão: cotações ao vivo não entram no histórico permanente.
    - `DEFAULT_DOMESTIC_BOARDING_FEE_BRL` — taxa de embarque estimada para separar tarifa e taxa (padrão 40).

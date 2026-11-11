@@ -23,7 +23,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from geopy.distance import geodesic
 from sqlalchemy.orm import Session
 
 from app.analyzers.interliner import VirtualInterlineRoute, build_virtual_interline_routes
@@ -42,24 +41,34 @@ from app.geo.catchment import CatchmentFinder
 from app.geo.entity_resolver import EntityResolver
 from app.models import Hub, Terminal, ModalType, ProviderMapping
 from app.services.quote_pipeline import QuotePipeline, process_and_persist_quotes
+from app.services.road_quotes import (
+    ROAD_ESTIMATE_PROVIDER,
+    build_antt_legs_to_hub,
+    build_antt_road_quotes,
+    has_antt_route,
+)
+from app.services.gtfs_road_quotes import build_gtfs_leg_to_hub, build_gtfs_road_quotes, has_gtfs_route
 
 logger = logging.getLogger("trivio.api.websocket")
 
 router = APIRouter(tags=["Real-Time Streaming"])
 
-# Identificador do provedor de cotações simuladas (estimativas sem preço real de mercado)
-SIMULATION_PROVIDER = "trivio_simulation"
-SIMULATION_NOTICE = (
-    "Estimativa simulada pelo Trivio a partir da distância geodésica: não é uma tarifa "
-    "real de mercado nem está disponível para compra."
+# Fontes de cada trecho da busca:
+#   ônibus          -> banco ANTT + projeção (app/services/road_quotes.py), sem custo;
+#   avião           -> Ignav (app/services/air_quotes.py), request paga;
+#   ônibus + avião  -> ônibus da ANTT até o hub + voo do Ignav saindo do hub.
+INTERLINER_PROVIDER = "trivio_interliner"
+PRICE_BASIS_INTERLINE = "antt_projection+ignav"
+INTERLINE_NOTICE = (
+    "Conexão montada pelo Trivio: trecho de ônibus estimado pelas vendas registradas na ANTT "
+    "(preço e horário estimados) e voo com tarifa ao vivo do Ignav. Os bilhetes são comprados "
+    "separadamente."
 )
 MAX_INTERLINE_HUBS = 2
 
-# Ônibus com preço real está DESLIGADO: o ClickBus recusa o acesso automatizado (403) e ainda
-# não há fonte autorizada. Enquanto isso, o ônibus aparece só como referência histórica da ANTT
-# (evento ROAD_REFERENCE), fora do ranking. Ligar de novo exige uma fonte autorizada.
+# Ofertas reais de ônibus (ClickBus) seguem DESLIGADAS: o site recusa o acesso automatizado e a
+# API B2B ainda não foi liberada. O ônibus da busca vem da projeção ANTT (road_quotes).
 ROAD_OFFERS_ENABLED = False
-
 
 # ==============================================================================
 # 1. Resolução de Localidades
@@ -78,8 +87,10 @@ def _resolve_hub_and_terminals(query_str: str, db: Session, resolver: EntityReso
         if not term:
             return None, None, None
         hub = term.hub
-        road_term = term if term.modal == ModalType.ROAD else next((t for t in hub.terminals if t.modal == ModalType.ROAD), None)
-        air_term = term if term.modal == ModalType.AIR else next((t for t in hub.terminals if t.modal == ModalType.AIR), None)
+        # Terminal escolhido por nome/código restringe a busca àquele modal: uma rodoviária
+        # não traz o aeroporto da cidade (e vice-versa), senão o Ignav seria consultado à toa.
+        road_term = term if term.modal == ModalType.ROAD else None
+        air_term = term if term.modal == ModalType.AIR else None
     else:
         hub = db.query(Hub).filter(Hub.id == res.id).first()
         if not hub:
@@ -138,164 +149,14 @@ def _find_interline_hubs(
             continue
         road_term = next((t for t in hub.terminals if t.modal == ModalType.ROAD), None)
         air_term = next((t for t in hub.terminals if t.id == candidate.terminal_id), None)
-        if not road_term or not air_term:
+        # Sem código IATA o voo do hub não pode ir ao Ignav (pago): o hub fica de fora.
+        if not road_term or not air_term or not air_term.official_code:
             continue
         seen_hubs.add(hub.id)
         selected.append((hub, road_term, air_term))
         if len(selected) >= max_hubs:
             break
     return selected
-
-
-# ==============================================================================
-# 2. Cotações Simuladas (Modo Demonstração)
-# ==============================================================================
-
-def get_corridor_quotes(
-    origin: str,
-    dest: str,
-    date_str: str,
-    db: Optional[Session] = None,
-) -> List[StandardizedQuote]:
-    """Gera cotações SIMULADAS a partir da distância geodésica entre os hubs.
-
-    Usadas apenas quando nenhum coletor real retorna dados (WAF ou credenciais ausentes).
-    Todas são marcadas com provider_source='trivio_simulation' e route_metadata['is_simulated']=True,
-    usam operadoras genéricas (nunca nomes de empresas reais) e não são persistidas no banco.
-    """
-    own_session = False
-    if db is None:
-        db = SessionLocal()
-        own_session = True
-
-    try:
-        try:
-            dep_base = datetime.strptime(date_str, "%Y-%m-%d")
-        except Exception:
-            dep_base = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=7)
-
-        resolver = EntityResolver(db)
-        orig_hub, orig_road_term, orig_air_term = _resolve_hub_and_terminals(origin, db, resolver)
-        dest_hub, dest_road_term, dest_air_term = _resolve_hub_and_terminals(dest, db, resolver)
-
-        # Distância geodésica real entre os hubs
-        if orig_hub and dest_hub:
-            dist_km = round(
-                geodesic((orig_hub.latitude, orig_hub.longitude), (dest_hub.latitude, dest_hub.longitude)).kilometers,
-                1,
-            )
-        else:
-            dist_km = 350.0
-
-        # Fator de sinuosidade rodoviária no relevo brasileiro (~1.18x)
-        road_km = max(40.0, round(dist_km * 1.18, 1))
-
-        # Duração rodoviária baseada em velocidade comercial de ônibus de linha (~75 km/h)
-        road_duration_min = max(45, int((road_km / 75.0) * 60))
-        door_to_door_road = road_duration_min + settings.BUS_TERMINAL_CHECKIN_BUFFER_MINUTES
-
-        orig_road_code = orig_road_term.official_code if orig_road_term else f"{origin.upper()}-ROD"
-        dest_road_code = dest_road_term.official_code if dest_road_term else f"{dest.upper()}-ROD"
-
-        # Tarifas estimadas por quilômetro (heurística, não tabela ANTT oficial)
-        base_semi = round(max(32.0, road_km * 0.38 + 12.0), 2)
-        base_leito = round(max(65.0, road_km * 0.62 + 20.0), 2)
-
-        def _sim_meta(extra: Dict[str, Any]) -> Dict[str, Any]:
-            meta = {
-                "is_simulated": True,
-                "simulation_notice": SIMULATION_NOTICE,
-                "is_direct": True,
-            }
-            meta.update(extra)
-            return meta
-
-        quotes: List[StandardizedQuote] = []
-
-        # 1. Ônibus Semi-Leito Diurno (estimativa)
-        semi_dep = dep_base.replace(hour=8, minute=30)
-        quotes.append(
-            StandardizedQuote(
-                origin_external_id=orig_road_code,
-                destination_external_id=dest_road_code,
-                modal="ROAD",
-                provider_source=SIMULATION_PROVIDER,
-                carrier_name="Ônibus Semi-Leito (estimativa)",
-                service_class="SEMI_LEITO",
-                departure_time=semi_dep,
-                arrival_time=semi_dep + timedelta(minutes=road_duration_min),
-                duration_minutes=road_duration_min,
-                door_to_door_duration_minutes=door_to_door_road,
-                base_price=base_semi,
-                route_metadata=_sim_meta({
-                    "stops_count": 1 if road_km > 200 else 0,
-                    "road_distance_km": road_km,
-                }),
-            )
-        )
-
-        # 2. Ônibus Leito Cama Noturno (estimativa)
-        leito_dep_hour = 23 if road_duration_min >= 270 else 18
-        leito_dep_min = 0 if road_duration_min >= 270 else 30
-        leito_dep = dep_base.replace(hour=leito_dep_hour, minute=leito_dep_min)
-        quotes.append(
-            StandardizedQuote(
-                origin_external_id=orig_road_code,
-                destination_external_id=dest_road_code,
-                modal="ROAD",
-                provider_source=SIMULATION_PROVIDER,
-                carrier_name="Ônibus Leito-Cama (estimativa)",
-                service_class="LEITO_CAMA",
-                departure_time=leito_dep,
-                arrival_time=leito_dep + timedelta(minutes=road_duration_min),
-                duration_minutes=road_duration_min,
-                door_to_door_duration_minutes=door_to_door_road,
-                base_price=base_leito,
-                route_metadata=_sim_meta({
-                    "stops_count": 0,
-                    "road_distance_km": road_km,
-                }),
-            )
-        )
-
-        # 3. Voo direto (se ambos os hubs tiverem aeroporto e a distância for superior a 100km)
-        if orig_air_term and dest_air_term and dist_km >= 100.0:
-            orig_air_code = orig_air_term.official_code or "AER"
-            dest_air_code = dest_air_term.official_code or "AER"
-
-            # Duração de voo (cruzeiro ~650 km/h + 25 min subida/descida)
-            flight_duration_min = max(45, int((dist_km / 650.0) * 60) + 25)
-            base_air = round(max(240.0, dist_km * 0.65 + 150.0), 2)
-            tax_air = round(max(35.0, dist_km * 0.08 + 25.0), 2)
-            air_dep = dep_base.replace(hour=14, minute=0)
-
-            quotes.append(
-                StandardizedQuote(
-                    origin_external_id=orig_air_code,
-                    destination_external_id=dest_air_code,
-                    modal="AIR",
-                    provider_source=SIMULATION_PROVIDER,
-                    carrier_name="Voo direto (estimativa)",
-                    service_class="ECONOMY",
-                    departure_time=air_dep,
-                    arrival_time=air_dep + timedelta(minutes=flight_duration_min),
-                    duration_minutes=flight_duration_min,
-                    door_to_door_duration_minutes=flight_duration_min + settings.AIRPORT_DOMESTIC_CHECKIN_BUFFER_MINUTES,
-                    base_price=base_air,
-                    taxes_price=tax_air,
-                    baggage_fee_estimate=settings.DEFAULT_FLIGHT_BAGGAGE_FEE_ESTIMATE_BRL,
-                    route_metadata=_sim_meta({
-                        "stops_count": 0,
-                        "flight_distance_km": dist_km,
-                    }),
-                )
-            )
-
-        return quotes
-
-    finally:
-        if own_session:
-            db.close()
 
 
 # ==============================================================================
@@ -380,28 +241,6 @@ async def _fetch_provider_batch(
         }
 
 
-async def _fetch_interline_pair(
-    hub_id: int,
-    road_collector: Any,
-    origin_road: str,
-    hub_road: str,
-    air_collector: Any,
-    hub_air: str,
-    dest_air: str,
-    travel_date: str,
-) -> Dict[str, Any]:
-    """Ônibus origem -> hub e, só se houver ônibus, voo hub -> destino."""
-    leg1 = await _fetch_provider_batch(f"interline_leg1::{hub_id}", road_collector, origin_road, hub_road, travel_date)
-    legs = [leg1]
-    if leg1["success"] and leg1["quotes"]:
-        legs.append(await _fetch_provider_batch(
-            f"interline_leg2::{hub_id}", air_collector, hub_air, dest_air, travel_date
-        ))
-    else:
-        logger.info(f"[interline] Hub {hub_id}: sem ônibus até o hub; voo não consultado (evita request paga).")
-    return {"provider": f"interline_pair::{hub_id}", "legs": legs}
-
-
 def _process_and_score_quotes(
     quotes: List[StandardizedQuote],
     hourly_time_value: float,
@@ -438,46 +277,47 @@ def _process_and_score_quotes(
 def _build_interline_quotes(
     origin: str,
     destination: str,
-    travel_date: str,
+    orig_hub: Hub,
+    orig_road_term: Terminal,
     interline_hubs: List[Tuple[Hub, Terminal, Terminal]],
     leg_results: Dict[str, List[StandardizedQuote]],
-    simulation_mode: bool,
     hourly_value: float,
     db: Session,
 ) -> List[StandardizedQuote]:
-    """Constrói rotas Ônibus (Origem -> Hub) + Voo (Hub -> Destino) para cada hub candidato."""
+    """Conexão Ônibus (Origem -> Hub) + Voo (Hub -> Destino) para cada hub candidato.
+
+    O voo vem do Ignav (já consultado). O ônibus vem da projeção ANTT e é encaixado
+    antes de cada voo, porque a série da ANTT não tem horários.
+    """
     all_routes: List[VirtualInterlineRoute] = []
 
     for hub, hub_road_term, hub_air_term in interline_hubs:
-        leg1_raw = list(leg_results.get(f"interline_leg1::{hub.id}", []))
-        leg2_raw = list(leg_results.get(f"interline_leg2::{hub.id}", []))
-
-        # No modo simulação, as pernas também são estimadas (nunca misturamos com dados reais)
-        if simulation_mode:
-            if not leg1_raw:
-                leg1_raw = [
-                    q for q in get_corridor_quotes(origin, hub_road_term.official_code or hub.name, travel_date, db=db)
-                    if q.modal == "ROAD"
-                ]
-            if not leg2_raw:
-                leg2_raw = [
-                    q for q in get_corridor_quotes(hub_air_term.official_code or hub.name, destination, travel_date, db=db)
-                    if q.modal == "AIR"
-                ]
+        flights_raw = list(leg_results.get(f"interline_leg2::{hub.id}", []))
+        if not flights_raw:
+            continue
 
         hub_codes = {t.official_code for t in hub.terminals if t.official_code}
         terminal_lookup = {t.official_code: t for t in hub.terminals if t.official_code}
 
-        # Mantém apenas pernas que de fato chegam ao / partem do hub intermediário
+        leg2 = [
+            q for q in _process_and_score_quotes(flights_raw, hourly_value, db)
+            if q.modal == "AIR" and q.canonical_origin_id in hub_codes
+        ]
+        if not leg2:
+            continue
+
+        leg1_raw = build_antt_legs_to_hub(
+            db, orig_hub, orig_road_term, hub, hub_road_term, [q.departure_time for q in leg2]
+        )
+        if not leg1_raw:   # sem série ANTT para este trecho: horário e tarifa do GTFS
+            leg1_raw = build_gtfs_leg_to_hub(
+                db, orig_hub, orig_road_term, hub, hub_road_term, [q.departure_time for q in leg2]
+            )
         leg1 = [
             q for q in _process_and_score_quotes(leg1_raw, hourly_value, db)
             if q.modal == "ROAD" and q.canonical_destination_id in hub_codes
         ]
-        leg2 = [
-            q for q in _process_and_score_quotes(leg2_raw, hourly_value, db)
-            if q.modal == "AIR" and q.canonical_origin_id in hub_codes
-        ]
-        if not leg1 or not leg2:
+        if not leg1:
             continue
 
         all_routes.extend(
@@ -498,14 +338,53 @@ def _build_interline_quotes(
     interline_quotes: List[StandardizedQuote] = []
     for route in all_routes[:10]:
         quote = route.to_standardized_quote()
-        legs_simulated = any(
-            (getattr(leg, "route_metadata", None) or {}).get("is_simulated") for leg in (route.leg1, route.leg2)
-        )
-        if legs_simulated:
-            quote.route_metadata["is_simulated"] = True
-            quote.route_metadata["simulation_notice"] = SIMULATION_NOTICE
+        # O trecho de ônibus é estimativa: a conexão não tem compra única nem vai para o banco.
+        quote.route_metadata["is_simulated"] = True
+        quote.route_metadata["price_basis"] = PRICE_BASIS_INTERLINE
+        quote.route_metadata["simulation_notice"] = INTERLINE_NOTICE
         interline_quotes.append(quote)
     return interline_quotes
+
+
+async def _emit_antt_road_batch(
+    websocket: WebSocket,
+    session_id: str,
+    db: Session,
+    from_hub: Hub,
+    from_road_term: Terminal,
+    to_hub: Hub,
+    to_road_term: Terminal,
+    travel_date: str,
+    hourly_value: float,
+    start_search_time: float,
+) -> List[StandardizedQuote]:
+    """Ônibus Origem -> Destino a partir do banco ANTT (sem custo), emitido como lote."""
+    raw = build_antt_road_quotes(db, from_hub, from_road_term, to_hub, to_road_term, travel_date)
+    if not raw:   # sem série ANTT para a rota: horário e tarifa do feed GTFS, se houver
+        raw = build_gtfs_road_quotes(db, from_hub, from_road_term, to_hub, to_road_term, travel_date)
+    elapsed = round((time.perf_counter() - start_search_time) * 1000, 1)
+    if not raw:
+        await websocket.send_json({
+            "event": "PROVIDER_ERROR",
+            "session_id": session_id,
+            "provider": ROAD_ESTIMATE_PROVIDER,
+            "error": f"Sem vendas ANTT nem horário de feed GTFS de {from_hub.name} a {to_hub.name}.",
+            "reason": "no_antt_data",
+            "elapsed_ms": elapsed,
+        })
+        return []
+    processed = _process_and_score_quotes(raw, hourly_time_value=hourly_value, db_session=db)
+    await websocket.send_json({
+        "event": "QUOTE_BATCH",
+        "session_id": session_id,
+        "provider": processed[0].provider_source if processed else ROAD_ESTIMATE_PROVIDER,
+        "modal": "ROAD",
+        "is_simulated": True,
+        "count": len(processed),
+        "quotes": [q.to_dict() for q in processed],
+        "elapsed_ms": elapsed,
+    })
+    return processed
 
 
 # ==============================================================================
@@ -524,7 +403,8 @@ async def orchestrate_search(
     return_date = params.get("return_date")
     hourly_value = float(params.get("hourly_value", settings.DEFAULT_HOURLY_TIME_VALUE_BRL))
     radius_km = float(params.get("radius_km") or settings.DEFAULT_CATCHMENT_RADIUS_KM)
-    enable_interlining = str(params.get("enable_virtual_interlining", True)).strip().lower() not in ("false", "0", "no")
+    # Conexão ônibus + avião só quando o usuário pede (cada hub custa uma request do Ignav)
+    enable_interlining = str(params.get("enable_virtual_interlining", False)).strip().lower() in ("true", "1", "yes")
 
     start_search_time = time.perf_counter()
 
@@ -579,7 +459,13 @@ async def _run_search(
     enable_interlining: bool,
     start_search_time: float,
 ) -> None:
-    """Valida os parâmetros e executa a busca concorrente com streaming de eventos."""
+    """Valida os parâmetros e executa a busca concorrente com streaming de eventos.
+
+    Fonte de cada trecho:
+    - ônibus: banco ANTT + projeção (nunca o Ignav);
+    - avião: Ignav, só com aeroporto cadastrado nos dois lados;
+    - ônibus + avião (só quando pedido): ônibus da ANTT até o hub + voo do Ignav do hub.
+    """
     resolver = EntityResolver(db)
     orig_hub, orig_road_term, orig_air_term = _resolve_hub_and_terminals(origin, db, resolver)
     dest_hub, dest_road_term, dest_air_term = _resolve_hub_and_terminals(destination, db, resolver)
@@ -594,6 +480,28 @@ async def _run_search(
         })
         return
 
+    air_collector = get_air_quote_service()
+
+    # Avião: o Ignav (pago) só recebe códigos IATA de aeroportos cadastrados nos dois lados.
+    orig_air_code = orig_air_term.official_code if orig_air_term else None
+    dest_air_code = dest_air_term.official_code if dest_air_term else None
+    air_available = bool(orig_air_code and dest_air_code)
+
+    # Ônibus: precisa de rodoviária cadastrada nos dois lados; o preço vem do banco ANTT.
+    orig_road_ok = bool(orig_road_term and orig_road_term.official_code)
+    dest_road_ok = bool(dest_road_term and dest_road_term.official_code)
+    road_available = orig_road_ok and dest_road_ok
+
+    # Ônibus + avião: só quando o usuário pede a conexão. Cada hub custa uma request do
+    # Ignav (o voo do hub), então só entram hubs com ônibus registrado na ANTT até eles.
+    interline_hubs: List[Tuple[Hub, Terminal, Terminal]] = []
+    if enable_interlining and dest_air_code and orig_road_ok:
+        for hub, hub_road_term, hub_air_term in _find_interline_hubs(orig_hub, dest_hub, db, radius_km):
+            if has_antt_route(db, orig_hub, hub, travel_date) or has_gtfs_route(db, orig_hub, hub):
+                interline_hubs.append((hub, hub_road_term, hub_air_term))
+            else:
+                logger.info(f"[interline] {hub.name}: sem ônibus na ANTT até o hub; voo não consultado.")
+
     # 1. Emite SEARCH_STARTED
     await websocket.send_json({
         "event": "SEARCH_STARTED",
@@ -603,73 +511,96 @@ async def _run_search(
         "travel_date": travel_date,
         "return_date": return_date,
         "providers": (
-            (["clickbus"] if ROAD_OFFERS_ENABLED else [])
-            + [get_air_quote_service().provider_name]
-            + (["virtual_interlining"] if ROAD_OFFERS_ENABLED else [])
+            ([ROAD_ESTIMATE_PROVIDER] if road_available else [])
+            + (["clickbus"] if ROAD_OFFERS_ENABLED and road_available else [])
+            + ([air_collector.provider_name] if air_available else [])
+            + (["virtual_interlining"] if interline_hubs else [])
         ),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 
-    air_collector = get_air_quote_service()
-
-    orig_clickbus = _clickbus_external_id(db, orig_road_term, origin) if ROAD_OFFERS_ENABLED else ""
-    dest_clickbus = _clickbus_external_id(db, dest_road_term, destination) if ROAD_OFFERS_ENABLED else ""
-    orig_air_code = orig_air_term.official_code if orig_air_term else origin.upper()
-    dest_air_code = dest_air_term.official_code if dest_air_term else destination.upper()
-
-    # Hubs intermediários para Virtual Interlining (só faz sentido se o destino tiver aeroporto)
-    interline_hubs: List[Tuple[Hub, Terminal, Terminal]] = []
-    if ROAD_OFFERS_ENABLED and enable_interlining and dest_air_term:
-        interline_hubs = _find_interline_hubs(orig_hub, dest_hub, db, radius_km)
+    if not air_available:
+        missing = origin if not orig_air_code else destination
+        await websocket.send_json({
+            "event": "PROVIDER_ERROR",
+            "session_id": session_id,
+            "provider": air_collector.provider_name,
+            "error": f"Aéreo não consultado: '{missing}' não tem aeroporto cadastrado.",
+            "reason": "no_airport",
+            "elapsed_ms": 0.0,
+        })
+    if not road_available:
+        missing = origin if not orig_road_ok else destination
+        await websocket.send_json({
+            "event": "PROVIDER_ERROR",
+            "session_id": session_id,
+            "provider": ROAD_ESTIMATE_PROVIDER,
+            "error": f"Ônibus não consultado: '{missing}' não tem rodoviária cadastrada.",
+            "reason": "no_bus_station",
+            "elapsed_ms": 0.0,
+        })
 
     all_outbound_quotes: List[StandardizedQuote] = []
     all_inbound_quotes: List[StandardizedQuote] = []
     leg_results: Dict[str, List[StandardizedQuote]] = {}
 
-    # Tarefas assíncronas concorrentes de Ida
-    tasks = [
-        asyncio.create_task(
+    # Tarefas concorrentes: voos no Ignav (e a ClickBus, hoje desligada)
+    tasks = []
+    if air_available:
+        tasks.append(asyncio.create_task(
             _fetch_provider_batch(air_collector.provider_name, air_collector, orig_air_code, dest_air_code, travel_date)
-        ),
-    ]
-    if ROAD_OFFERS_ENABLED:
+        ))
+        if return_date:
+            tasks.append(asyncio.create_task(
+                _fetch_provider_batch(
+                    f"{air_collector.provider_name}_return", air_collector, dest_air_code, orig_air_code, return_date
+                )
+            ))
+    if ROAD_OFFERS_ENABLED and road_available:
         road_collector = ClickBusCollector()
-        tasks.insert(0, asyncio.create_task(
+        orig_clickbus = _clickbus_external_id(db, orig_road_term, origin)
+        dest_clickbus = _clickbus_external_id(db, dest_road_term, destination)
+        tasks.append(asyncio.create_task(
             _fetch_provider_batch("clickbus", road_collector, orig_clickbus, dest_clickbus, travel_date)
         ))
-
-    # Se houver data de volta, adiciona tarefas concorrentes de Volta para Hacker Fares
-    if return_date and ROAD_OFFERS_ENABLED:
+        if return_date:
+            tasks.append(asyncio.create_task(
+                _fetch_provider_batch("clickbus_return", road_collector, dest_clickbus, orig_clickbus, return_date)
+            ))
+    # Voo de cada hub da conexão (Hub -> Destino); o ônibus até o hub sai do banco ANTT
+    for hub, _hub_road_term, hub_air_term in interline_hubs:
         tasks.append(asyncio.create_task(
-            _fetch_provider_batch("clickbus_return", road_collector, dest_clickbus, orig_clickbus, return_date)
-        ))
-        tasks.append(asyncio.create_task(
-            _fetch_provider_batch(f"{air_collector.provider_name}_return", air_collector, dest_air_code, orig_air_code, return_date)
-        ))
-
-    # Pernas do Virtual Interlining: Ônibus Origem -> Hub e Voo Hub -> Destino
-    # O voo é pago: só é consultado depois que o ônibus até o hub trouxe resultado.
-    # Sem a perna rodoviária a rota híbrida não se forma, e a request seria desperdiçada.
-    for hub, hub_road_term, hub_air_term in interline_hubs:
-        hub_clickbus = _clickbus_external_id(db, hub_road_term, hub_road_term.official_code or hub.name)
-        tasks.append(asyncio.create_task(
-            _fetch_interline_pair(
-                hub.id, road_collector, orig_clickbus, hub_clickbus,
-                air_collector, hub_air_term.official_code, dest_air_code, travel_date,
+            _fetch_provider_batch(
+                f"interline_leg2::{hub.id}", air_collector, hub_air_term.official_code, dest_air_code, travel_date
             )
         ))
 
     try:
-        # 2. Processa cada lote progressivamente à medida que responde (as_completed)
+        # 2. Ônibus pela ANTT: sai na hora, enquanto os voos ainda estão sendo consultados
+        if road_available:
+            all_outbound_quotes.extend(await _emit_antt_road_batch(
+                websocket, session_id, db, orig_hub, orig_road_term, dest_hub, dest_road_term,
+                travel_date, hourly_value, start_search_time,
+            ))
+            if return_date:
+                inbound_road = build_antt_road_quotes(
+                    db, dest_hub, dest_road_term, orig_hub, orig_road_term, return_date
+                )
+                all_inbound_quotes.extend(
+                    _process_and_score_quotes(inbound_road, hourly_time_value=hourly_value, db_session=db)
+                )
+
+        # 3. Voos (e ClickBus, se ligada) à medida que respondem
         for completed_coroutine in asyncio.as_completed(tasks):
             result = await completed_coroutine
             prov = result["provider"]
 
-            # Pernas de interlining não são opções Origem -> Destino: apenas armazena
+            # Voo do hub não é opção Origem -> Destino: guarda para montar a conexão
             if prov.startswith("interline_"):
-                for leg in result.get("legs", [result]):
-                    if leg["success"]:
-                        leg_results[leg["provider"]] = leg["quotes"]
+                if result["success"]:
+                    leg_results[prov] = result["quotes"]
+                else:
+                    logger.warning(f"[interline] {prov} sem voos: {result.get('error')}")
                 continue
 
             if not result["success"]:
@@ -691,9 +622,9 @@ async def _run_search(
 
             if "_return" in prov:
                 all_inbound_quotes.extend(processed_quotes)
-            else:
-                all_outbound_quotes.extend(processed_quotes)
+                continue   # a volta entra nas combinações Hacker Fares, não na lista de ida
 
+            all_outbound_quotes.extend(processed_quotes)
             await websocket.send_json({
                 "event": "QUOTE_BATCH",
                 "session_id": session_id,
@@ -704,66 +635,39 @@ async def _run_search(
                 "elapsed_ms": result["elapsed_ms"],
             })
 
-        # Referência histórica rodoviária (ANTT): não entra no ranking, só informa a faixa de preço.
-        if orig_hub and dest_hub:
-            try:
-                references = build_road_references(
-                    db,
-                    origin_city=orig_hub.name,
-                    origin_state=orig_hub.state,
-                    destination_city=dest_hub.name,
-                    destination_state=dest_hub.state,
-                    travel_date=travel_date,
-                )
-                if references:
-                    await websocket.send_json({
-                        "event": "ROAD_REFERENCE",
-                        "session_id": session_id,
-                        "source": "antt_monitriip",
-                        "reference_only": True,
-                        "origin": origin,
-                        "destination": destination,
-                        "references": references,
-                    })
-            except Exception as ref_err:
-                logger.warning(f"Falha ao montar referência rodoviária ANTT: {ref_err}")
-
-        # Modo simulação: nenhum coletor real retornou dados (ex: WAF 403 ou sem credenciais no .env)
-        simulation_mode = not all_outbound_quotes
-        if simulation_mode:
-            logger.warning(
-                f"[{session_id}] Nenhum coletor real retornou cotações para {origin}->{destination}. "
-                "Exibindo estimativas simuladas (não persistidas)."
+        # Referência histórica rodoviária (ANTT): faixa por classe, com a projeção do mês.
+        try:
+            references = build_road_references(
+                db,
+                origin_city=orig_hub.name,
+                origin_state=orig_hub.state,
+                destination_city=dest_hub.name,
+                destination_state=dest_hub.state,
+                travel_date=travel_date,
             )
-            simulated = get_corridor_quotes(origin, destination, travel_date, db=db)
-            processed_sample = _process_and_score_quotes(simulated, hourly_time_value=hourly_value, db_session=db)
-            all_outbound_quotes.extend(processed_sample)
-            await websocket.send_json({
-                "event": "QUOTE_BATCH",
-                "session_id": session_id,
-                "provider": SIMULATION_PROVIDER,
-                "modal": "HYBRID",
-                "is_simulated": True,
-                "count": len(processed_sample),
-                "quotes": [q.to_dict() for q in processed_sample],
-                "elapsed_ms": round((time.perf_counter() - start_search_time) * 1000, 1),
-            })
+            if references:
+                await websocket.send_json({
+                    "event": "ROAD_REFERENCE",
+                    "session_id": session_id,
+                    "source": "antt_monitriip",
+                    "reference_only": True,
+                    "origin": origin,
+                    "destination": destination,
+                    "references": references,
+                })
+        except Exception as ref_err:
+            logger.warning(f"Falha ao montar referência rodoviária ANTT: {ref_err}")
 
-        if return_date and not all_inbound_quotes:
-            inbound_sample = get_corridor_quotes(destination, origin, return_date, db=db)
-            processed_inbound = _process_and_score_quotes(inbound_sample, hourly_time_value=hourly_value, db_session=db)
-            all_inbound_quotes.extend(processed_inbound)
-
-        # 3. Síntese de Virtual Interlining (Ônibus Origem -> Hub + Voo Hub -> Destino)
+        # 4. Conexão Ônibus (ANTT) + Voo (Ignav)
         if interline_hubs:
             try:
                 interline_quotes = _build_interline_quotes(
                     origin=origin,
                     destination=destination,
-                    travel_date=travel_date,
+                    orig_hub=orig_hub,
+                    orig_road_term=orig_road_term,
                     interline_hubs=interline_hubs,
                     leg_results=leg_results,
-                    simulation_mode=simulation_mode,
                     hourly_value=hourly_value,
                     db=db,
                 )
@@ -772,17 +676,17 @@ async def _run_search(
                     await websocket.send_json({
                         "event": "QUOTE_BATCH",
                         "session_id": session_id,
-                        "provider": "trivio_interliner",
+                        "provider": INTERLINER_PROVIDER,
                         "modal": "ROAD_AIR",
-                        "is_simulated": any(q.route_metadata.get("is_simulated") for q in interline_quotes),
+                        "is_simulated": True,
                         "count": len(interline_quotes),
                         "quotes": [q.to_dict() for q in interline_quotes],
                         "elapsed_ms": round((time.perf_counter() - start_search_time) * 1000, 1),
                     })
             except Exception as il_err:
-                logger.warning(f"Erro ao sintetizar rotas de interlining: {il_err}", exc_info=True)
+                logger.warning(f"Erro ao montar conexões ônibus + voo: {il_err}", exc_info=True)
 
-        # 4. Geração de Hacker Fares (se houver bilhetes de volta)
+        # 5. Combinações Hacker Fares (se houver bilhetes de volta)
         if return_date and all_outbound_quotes and all_inbound_quotes:
             try:
                 hacker_combinations = generate_hacker_fares(
@@ -800,7 +704,7 @@ async def _run_search(
             except Exception as hf_err:
                 logger.warning(f"Erro ao gerar combinações Hacker Fares: {hf_err}")
 
-        # 5. Persistência com Smart Cache TTL (o pipeline descarta simulações e rotas sintetizadas)
+        # 6. Persistência com Smart Cache TTL (o pipeline descarta estimativas e conexões)
         try:
             if all_outbound_quotes:
                 process_and_persist_quotes(all_outbound_quotes, db)
@@ -810,7 +714,7 @@ async def _run_search(
             db.rollback()
             logger.warning(f"Erro não fatal ao salvar cotações no cache: {db_err}")
 
-        # 6. Emite SEARCH_COMPLETED com estatísticas finais
+        # 7. Emite SEARCH_COMPLETED com estatísticas finais
         total_search_elapsed = round((time.perf_counter() - start_search_time) * 1000, 1)
         cheapest_price = (
             min(q.total_effective_price for q in all_outbound_quotes)
@@ -827,7 +731,8 @@ async def _run_search(
             "total_elapsed_ms": total_search_elapsed,
             "cheapest_effective_price": round(cheapest_price, 2),
             "best_trivio_score": round(best_trivio_score, 1),
-            "is_simulated": simulation_mode,
+            # Há estimativas (ônibus ANTT ou conexão) entre os resultados?
+            "is_simulated": any(q.route_metadata.get("is_simulated") for q in all_outbound_quotes),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 

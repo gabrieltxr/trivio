@@ -120,3 +120,20 @@ class LocationSuggestion(BaseModel):
     subtitle: str
     highlight: Optional[str] = None
 
+
+
+# ==============================================================================
+# 5. Schemas de Projeção Rodoviária (série ANTT)
+# ==============================================================================
+
+class RoadFareProjectionResponse(BaseModel):
+    route_key: str
+    service_class: str
+    trip_month: str
+    estimate_brl: Optional[float] = None
+    low_brl: Optional[float] = None
+    high_brl: Optional[float] = None
+    sample_size: int
+    confidence: str  # "alta" | "média" | "baixa" | "sem_dados"
+    basis: str       # "trip_month" | "recent_level" | "none"
+    notice: str

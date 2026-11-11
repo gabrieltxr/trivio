@@ -45,7 +45,6 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
   const [radiusKm, setRadiusKm] = useState(120);
   const [hourlyValue, setHourlyValue] = useState(35.0);
   const [includeBaggage, setIncludeBaggage] = useState(false);
-  const [enableInterlining, setEnableInterlining] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -75,7 +74,8 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
       hourly_value: hourlyValue,
       radius_km: radiusKm,
       include_baggage: includeBaggage,
-      enable_virtual_interlining: enableInterlining,
+      // Conexão ônibus + avião só no modo "Conexão Híbrida": cada hub consulta um voo pago no Ignav.
+      enable_virtual_interlining: tripType === "intermodal",
     });
   };
 
@@ -114,10 +114,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
 
             <button
               type="button"
-              onClick={() => {
-                setTripType("intermodal");
-                setEnableInterlining(true);
-              }}
+              onClick={() => setTripType("intermodal")}
               className={`hidden sm:flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
                 tripType === "intermodal"
                   ? "bg-sky-600 text-white shadow-md shadow-sky-600/25"
@@ -326,18 +323,6 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
                   />
                   <span className="text-xs font-semibold text-slate-700">
                     Incluir mala despachada de 23kg no cálculo de custo real
-                  </span>
-                </label>
-
-                <label className="flex items-center gap-2.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={enableInterlining}
-                    onChange={(e) => setEnableInterlining(e.target.checked)}
-                    className="w-4 h-4 rounded text-cyan-600 accent-cyan-600"
-                  />
-                  <span className="text-xs font-semibold text-slate-700">
-                    Permitir conexões híbridas (Ônibus Interior + Voo Capital)
                   </span>
                 </label>
               </div>

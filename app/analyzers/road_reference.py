@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.analyzers.price_thermometer import MIN_OFFICIAL_MONTHS
+from app.analyzers.road_fare_projection import project_route_fare, projection_to_dict
 from app.models import ModalType
 
 # Classes de serviço da ANTT, na ordem em que aparecem na tela (do mais barato ao mais confortável).
@@ -58,6 +59,14 @@ def build_road_references(
         tickets = sum(sample for _, _, sample in series)
         month_mean = next((round(mean, 2) for month, mean, _ in series if month == travel_month), None)
 
+        # Projeção do analisador para o mês da viagem: mesma conta do endpoint /road/projection.
+        projection = None
+        if travel_month:
+            projection = projection_to_dict(project_route_fare(
+                db, origin_city, origin_state, destination_city, destination_state,
+                service_class, travel_month,
+            ))
+
         references.append({
             "service_class": service_class,
             "reference_period": f"{series[0][0]} a {series[-1][0]}",
@@ -68,6 +77,7 @@ def build_road_references(
             "p75_brl": round(_percentile(means, 0.75), 2),
             "travel_month_mean_brl": month_mean,
             "travel_month": travel_month,
+            "projection": projection,
         })
 
     return references

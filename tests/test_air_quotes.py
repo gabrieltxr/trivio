@@ -72,9 +72,14 @@ def session_factory(tmp_path):
     return sessionmaker(bind=engine)
 
 
-def _service(session_factory, collector, clock=None, budget=10, cache_max=7200):
-    return AirQuoteService(collector=collector, session_factory=session_factory, monthly_budget=budget,
-                           cache_max_seconds=cache_max, now=clock or Clock())
+SNAPSHOT_AS_OF = datetime(2026, 11, 1, 0, 0)
+
+
+def _service(session_factory, collector, clock=None, budget=10, cache_max=7200, margin=0):
+    # `budget` = saldo lido no painel em SNAPSHOT_AS_OF.
+    return AirQuoteService(collector=collector, session_factory=session_factory,
+                           requests_remaining=budget, remaining_as_of=SNAPSHOT_AS_OF,
+                           safety_margin=margin, cache_max_seconds=cache_max, now=clock or Clock())
 
 
 def _rows(session_factory):
@@ -228,16 +233,39 @@ async def test_budget_blocks_new_requests_but_not_cache_hits(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_budget_resets_each_month(session_factory):
+async def test_balance_does_not_renew_on_month_change(session_factory):
+    """O plano gratuito é um saldo único: virar o mês não libera novas requests."""
     clock = Clock(datetime(2026, 11, 30, 23, 0))
     service = _service(session_factory, FakeCollector(), clock=clock, budget=1)
 
     await service.get_quotes("CGH", "SDU", "2026-12-20")
-    with pytest.raises(AirProviderUnavailableError):
-        await service.get_quotes("CGH", "SDU", "2026-12-21")
-
     clock.now = datetime(2026, 12, 1, 0, 5)
-    assert len(await service.get_quotes("CGH", "SDU", "2026-12-21")) == 1
+    with pytest.raises(AirProviderUnavailableError) as info:
+        await service.get_quotes("CGH", "SDU", "2026-12-21")
+    assert info.value.reason == "budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_requests_before_the_snapshot_do_not_count(session_factory):
+    """O saldo do painel já desconta o passado: só o cobrado depois da leitura sai dele."""
+    early = Clock(datetime(2026, 10, 31, 12, 0))   # antes de SNAPSHOT_AS_OF
+    await _service(session_factory, FakeCollector(), clock=early, budget=5).get_quotes("CGH", "SDU", "2026-12-01")
+
+    usage = _service(session_factory, FakeCollector(), budget=5).usage()
+    assert usage["requests_used_since_snapshot"] == 0
+    assert usage["requests_left"] == 5
+
+
+@pytest.mark.asyncio
+async def test_safety_margin_stops_before_the_balance_ends(session_factory):
+    collector = FakeCollector()
+    service = _service(session_factory, collector, budget=3, margin=2)
+
+    await service.get_quotes("CGH", "SDU", "2026-12-01")      # sobra 2 = margem
+    with pytest.raises(AirProviderUnavailableError) as info:
+        await service.get_quotes("CGH", "SDU", "2026-12-02")
+    assert info.value.reason == "budget_exhausted"
+    assert collector.calls == 1
 
 
 @pytest.mark.asyncio
@@ -248,8 +276,8 @@ async def test_usage_counts_billed_requests(session_factory):
 
     usage = service.usage()
 
-    assert usage["requests_used_this_month"] == 1
-    assert usage["requests_left_this_month"] == 799
+    assert usage["requests_used_since_snapshot"] == 1
+    assert usage["requests_left"] == 799
 
 
 @pytest.mark.asyncio
@@ -307,7 +335,7 @@ async def test_booking_link_is_billed_once_and_cached(session_factory):
 
     assert url1 == url2 == "https://cia.example/compra"
     assert collector.calls == 1
-    assert service.usage()["requests_used_this_month"] == 1
+    assert service.usage()["requests_used_since_snapshot"] == 1
 
 
 def test_live_quotes_stay_out_of_permanent_history_by_default(monkeypatch):

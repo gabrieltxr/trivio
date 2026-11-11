@@ -41,3 +41,49 @@ def _cleanup() -> None:
 
 _seed_test_database()
 atexit.register(_cleanup)
+
+
+import pytest
+
+
+class AnttSeries:
+    """Insere linhas da série ANTT no banco de teste; tudo é removido ao fim do teste."""
+
+    SOURCE = "antt_test"
+
+    def __init__(self):
+        from app.database import SessionLocal
+
+        self.db = SessionLocal()
+
+    def add(self, route_key, service_class, trip_month, emission_period, sample_size, mean_brl):
+        from app.models import ModalType, RouteMonthlyFare
+
+        origin, destination = route_key.split("|")
+        origin_city, origin_state = origin.rsplit("-", 1)
+        destination_city, destination_state = destination.rsplit("-", 1)
+        self.db.add(RouteMonthlyFare(
+            route_key=route_key, origin_city=origin_city, origin_state=origin_state,
+            destination_city=destination_city, destination_state=destination_state,
+            modal=ModalType.ROAD, service_class=service_class, trip_month=trip_month,
+            emission_period=emission_period, source=self.SOURCE, sample_size=sample_size,
+            mean_brl=mean_brl, min_brl=mean_brl - 10, max_brl=mean_brl + 10,
+        ))
+        self.db.commit()
+        return self
+
+    def cleanup(self):
+        from app.models import RouteMonthlyFare
+
+        self.db.query(RouteMonthlyFare).filter(RouteMonthlyFare.source == self.SOURCE).delete()
+        self.db.commit()
+        self.db.close()
+
+
+@pytest.fixture
+def antt_series():
+    series = AnttSeries()
+    try:
+        yield series
+    finally:
+        series.cleanup()

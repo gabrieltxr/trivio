@@ -1,10 +1,11 @@
-"""Preços aéreos ao vivo com cache de consultas, orçamento mensal e coalescência.
+"""Preços aéreos ao vivo com cache de consultas, saldo de requests e coalescência.
 
 Toda request ao provedor aéreo é paga. Este serviço fica entre a busca e o
 coletor e decide, nesta ordem:
 
   1. Cache   — há consulta igual ainda válida em `provider_queries`? Responde dela.
-  2. Orçamento — o mês já usou AIR_MONTHLY_REQUEST_BUDGET requests? Não chama.
+  2. Saldo   — o saldo lido no painel do Ignav, menos o que foi cobrado desde a leitura,
+               chegou à margem de segurança? Não chama.
   3. Coalescência — a mesma consulta já está em andamento? Espera a mesma chamada.
   4. Coletor — faz a request, registra o resultado e guarda as cotações no cache.
 
@@ -74,8 +75,15 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _month_start(now: datetime) -> datetime:
-    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+def _parse_as_of(value: Any) -> datetime:
+    """Momento da leitura do saldo no painel (UTC, sem fuso, como o SQLite guarda)."""
+    if isinstance(value, datetime):
+        moment = value
+    else:
+        moment = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(timezone.utc).replace(tzinfo=None)
+    return moment
 
 
 def build_query_key(provider: str, kind: str, params: Dict[str, Any]) -> str:
@@ -107,28 +115,41 @@ class AirQuoteService:
         self,
         collector: Optional[IgnavCollector] = None,
         session_factory: Callable[[], Session] = SessionLocal,
-        monthly_budget: Optional[int] = None,
+        requests_remaining: Optional[int] = None,
+        remaining_as_of: Optional[Any] = None,
+        safety_margin: Optional[int] = None,
         cache_max_seconds: Optional[int] = None,
         now: Callable[[], datetime] = _utcnow,
     ):
         self.collector = collector or IgnavCollector()
         self.provider_name = self.collector.provider_name
         self.session_factory = session_factory
-        self.monthly_budget = settings.AIR_MONTHLY_REQUEST_BUDGET if monthly_budget is None else monthly_budget
+        self.requests_remaining = (
+            settings.AIR_REQUESTS_REMAINING if requests_remaining is None else requests_remaining
+        )
+        self.remaining_as_of = _parse_as_of(
+            settings.AIR_REQUESTS_REMAINING_AS_OF if remaining_as_of is None else remaining_as_of
+        )
+        self.safety_margin = (
+            settings.AIR_REQUESTS_SAFETY_MARGIN if safety_margin is None else safety_margin
+        )
         self.cache_max_seconds = (
             settings.AIR_LIVE_CACHE_MAX_SECONDS if cache_max_seconds is None else cache_max_seconds
         )
         self._now = now
 
-    # ------------------------------------------------------------------ orçamento
+    # ------------------------------------------------------------------ saldo
 
-    def requests_used_this_month(self, session: Session) -> int:
-        start = _month_start(self._now())
+    def requests_used_since_snapshot(self, session: Session) -> int:
+        """Requests cobradas desde a leitura do saldo no painel do Ignav."""
         stmt = select(func.coalesce(func.sum(ProviderQuery.billed), 0)).where(
             ProviderQuery.provider == self.provider_name,
-            ProviderQuery.requested_at >= start,
+            ProviderQuery.requested_at >= self.remaining_as_of,
         )
         return int(session.execute(stmt).scalar() or 0)
+
+    def requests_left(self, session: Session) -> int:
+        return self.requests_remaining - self.requests_used_since_snapshot(session)
 
     def _ensure_available(self, session: Session) -> None:
         if not self.collector.is_configured:
@@ -136,27 +157,31 @@ class AirQuoteService:
                 "not_configured",
                 "Aéreo ao vivo desligado: IGNAV_API_KEY não está configurada no .env.",
             )
-        if self.monthly_budget <= 0:
+        if self.requests_remaining <= 0:
             raise AirProviderUnavailableError(
-                "disabled", "Aéreo ao vivo desligado (AIR_MONTHLY_REQUEST_BUDGET=0)."
+                "disabled", "Aéreo ao vivo desligado (AIR_REQUESTS_REMAINING=0)."
             )
-        used = self.requests_used_this_month(session)
-        if used >= self.monthly_budget:
+        left = self.requests_left(session)
+        if left <= self.safety_margin:
             raise AirProviderUnavailableError(
                 "budget_exhausted",
-                f"Orçamento do aéreo ao vivo atingido neste mês ({used}/{self.monthly_budget} requests).",
+                f"Saldo de requests do Ignav na margem de segurança ({left} restantes; "
+                f"margem {self.safety_margin}). Confira o painel e atualize AIR_REQUESTS_REMAINING.",
             )
 
     def usage(self) -> Dict[str, Any]:
-        """Resumo do consumo do mês, para a rota de status."""
+        """Saldo estimado de requests do Ignav, para a rota de status."""
         with self.session_factory() as session:
-            used = self.requests_used_this_month(session)
+            used = self.requests_used_since_snapshot(session)
+        left = self.requests_remaining - used
         return {
             "provider": self.provider_name,
             "configured": self.collector.is_configured,
-            "monthly_budget": self.monthly_budget,
-            "requests_used_this_month": used,
-            "requests_left_this_month": max(0, self.monthly_budget - used),
+            "requests_remaining_at_snapshot": self.requests_remaining,
+            "snapshot_as_of": self.remaining_as_of.isoformat(),
+            "requests_used_since_snapshot": used,
+            "requests_left": max(0, left),
+            "safety_margin": self.safety_margin,
         }
 
     # ------------------------------------------------------------------ cache

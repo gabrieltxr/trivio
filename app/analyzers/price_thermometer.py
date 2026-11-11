@@ -529,6 +529,13 @@ def _evaluate_with_anac_statistics(quote: Any, db: Session) -> Optional[PriceThe
     return result
 
 
+def _is_antt_estimate(quote: Any) -> bool:
+    """O preço da cotação já É a média da ANTT (estimativa): compará-lo com a própria
+    série ANTT não diz nada, então essas cotações ficam sem termômetro."""
+    meta = _get_val(quote, "route_metadata", {}) or {}
+    return isinstance(meta, dict) and str(meta.get("price_basis", "")).startswith("antt_projection")
+
+
 def _attach_thermometer(quote: Any, result: PriceThermometerResult) -> None:
     """Injeta o resultado do termômetro no route_metadata da cotação."""
     data = result.to_dict()
@@ -552,6 +559,9 @@ def enrich_quote_with_thermometer(
 ) -> PriceThermometerResult:
     """Enriquece uma cotação individual com a análise do termômetro de preço."""
     price = float(_get_val(quote, "total_effective_price", 0.0) or _get_val(quote, "base_price", 0.0) or 0.0)
+
+    if _is_antt_estimate(quote):
+        return evaluate_price_distribution(current_price=price, historical_prices=[], min_samples=min_samples)
 
     # 1. Série oficial do modal, quando houver (ANTT no rodoviário, ANAC no aéreo):
     #    bilhetes realmente vendidos. Tem prioridade sobre o histórico próprio.
@@ -601,6 +611,9 @@ def enrich_quotes_batch_with_thermometer(
     corridor_cache: Dict[Tuple[int, int, str], List[float]] = {}
 
     for q in quotes:
+        if _is_antt_estimate(q):
+            continue   # preço já é a média da ANTT: sem termômetro
+
         # 1. Série oficial do modal tem prioridade (ANTT/ANAC: preço transacionado)
         if db is not None:
             official = _evaluate_with_official_statistics(q, db)
