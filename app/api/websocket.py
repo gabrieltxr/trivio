@@ -20,7 +20,7 @@ import json
 import logging
 import math
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 import uuid
 from zoneinfo import ZoneInfo
 
@@ -53,6 +53,8 @@ from app.services.road_quotes import (
 from app.services.gtfs_road_quotes import build_gtfs_leg_to_hub, build_gtfs_road_quotes, has_gtfs_route
 
 logger = logging.getLogger("trivio.api.websocket")
+
+T = TypeVar("T")
 
 router = APIRouter(tags=["Real-Time Streaming"])
 
@@ -165,6 +167,24 @@ def _find_interline_hubs(
 # ==============================================================================
 # 3. Coleta Concorrente e Esteira de Inteligência
 # ==============================================================================
+
+async def _run_db_work(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    """Executa trabalho síncrono de banco numa thread, com Session própria: fn(session, ...).
+
+    A esteira (SQLAlchemy síncrono + SQLite) leva dezenas a centenas de ms; no event loop
+    ela travaria pings, o envio dos lotes e as buscas de outros clientes. Uma Session não
+    pode ser usada por duas threads ao mesmo tempo, então cada chamada abre a sua; objetos
+    ORM da sessão da busca entram por id e são relidos aqui.
+    """
+    def run() -> T:
+        session = SessionLocal()
+        try:
+            return fn(session, *args, **kwargs)
+        finally:
+            session.close()
+
+    return await asyncio.to_thread(run)
+
 
 async def _fetch_provider_batch(
     collector_name: str,
@@ -352,10 +372,77 @@ def _build_interline_quotes(
     return interline_quotes
 
 
+def _build_interline_quotes_by_id(
+    session: Session,
+    origin: str,
+    destination: str,
+    orig_hub_id: int,
+    orig_road_term_id: int,
+    interline_hub_ids: List[Tuple[int, int, int]],
+    leg_results: Dict[str, List[StandardizedQuote]],
+    hourly_value: float,
+) -> List[StandardizedQuote]:
+    """_build_interline_quotes numa Session própria (ver _run_db_work)."""
+    interline_hubs = [
+        (session.get(Hub, hub_id), session.get(Terminal, road_id), session.get(Terminal, air_id))
+        for hub_id, road_id, air_id in interline_hub_ids
+    ]
+    return _build_interline_quotes(
+        origin=origin,
+        destination=destination,
+        orig_hub=session.get(Hub, orig_hub_id),
+        orig_road_term=session.get(Terminal, orig_road_term_id),
+        interline_hubs=interline_hubs,
+        leg_results=leg_results,
+        hourly_value=hourly_value,
+        db=session,
+    )
+
+
+def _road_batch_by_id(
+    session: Session,
+    road_ids: Tuple[int, int, int, int],
+    travel_date: str,
+    hourly_value: float,
+    start_search_time: float,
+    gtfs_fallback: bool,
+) -> Tuple[List[StandardizedQuote], float]:
+    """Monta e processa um lote de ônibus numa Session própria (ver _run_db_work).
+
+    road_ids = (hub de saída, rodoviária de saída, hub de chegada, rodoviária de chegada).
+    Devolve as cotações e o elapsed_ms do lote, medido ao fim da montagem, antes da esteira.
+    """
+    from_hub_id, from_road_term_id, to_hub_id, to_road_term_id = road_ids
+    from_hub, from_road_term = session.get(Hub, from_hub_id), session.get(Terminal, from_road_term_id)
+    to_hub, to_road_term = session.get(Hub, to_hub_id), session.get(Terminal, to_road_term_id)
+    raw = build_antt_road_quotes(session, from_hub, from_road_term, to_hub, to_road_term, travel_date)
+    if not raw and gtfs_fallback:   # sem série ANTT para a rota: horário e tarifa do feed GTFS, se houver
+        raw = build_gtfs_road_quotes(session, from_hub, from_road_term, to_hub, to_road_term, travel_date)
+    elapsed = round((time.perf_counter() - start_search_time) * 1000, 1)
+    if not raw:
+        return [], elapsed
+    return _process_and_score_quotes(raw, hourly_time_value=hourly_value, db_session=session), elapsed
+
+
+def _persist_quotes(
+    session: Session,
+    outbound: List[StandardizedQuote],
+    inbound: List[StandardizedQuote],
+) -> None:
+    """Persistência com Smart Cache TTL (o pipeline descarta estimativas e conexões)."""
+    try:
+        if outbound:
+            process_and_persist_quotes(outbound, session)
+        if inbound:
+            process_and_persist_quotes(inbound, session)
+    except Exception as db_err:
+        session.rollback()
+        logger.warning(f"Erro não fatal ao salvar cotações no cache: {db_err}")
+
+
 async def _emit_antt_road_batch(
     websocket: WebSocket,
     session_id: str,
-    db: Session,
     from_hub: Hub,
     from_road_term: Terminal,
     to_hub: Hub,
@@ -364,12 +451,15 @@ async def _emit_antt_road_batch(
     hourly_value: float,
     start_search_time: float,
 ) -> List[StandardizedQuote]:
-    """Ônibus Origem -> Destino a partir do banco ANTT (sem custo), emitido como lote."""
-    raw = build_antt_road_quotes(db, from_hub, from_road_term, to_hub, to_road_term, travel_date)
-    if not raw:   # sem série ANTT para a rota: horário e tarifa do feed GTFS, se houver
-        raw = build_gtfs_road_quotes(db, from_hub, from_road_term, to_hub, to_road_term, travel_date)
-    elapsed = round((time.perf_counter() - start_search_time) * 1000, 1)
-    if not raw:
+    """Ônibus Origem -> Destino a partir do banco ANTT (sem custo), emitido como lote.
+
+    A montagem e a esteira rodam numa thread (_run_db_work); o envio fica no event loop.
+    """
+    road_ids = (from_hub.id, from_road_term.id, to_hub.id, to_road_term.id)
+    processed, elapsed = await _run_db_work(
+        _road_batch_by_id, road_ids, travel_date, hourly_value, start_search_time, True,
+    )
+    if not processed:
         await websocket.send_json({
             "event": "PROVIDER_ERROR",
             "session_id": session_id,
@@ -379,7 +469,6 @@ async def _emit_antt_road_batch(
             "elapsed_ms": elapsed,
         })
         return []
-    processed = _process_and_score_quotes(raw, hourly_time_value=hourly_value, db_session=db)
     await websocket.send_json({
         "event": "QUOTE_BATCH",
         "session_id": session_id,
@@ -646,16 +735,16 @@ async def _run_search(
         # 2. Ônibus pela ANTT: sai na hora, enquanto os voos ainda estão sendo consultados
         if road_available:
             all_outbound_quotes.extend(await _emit_antt_road_batch(
-                websocket, session_id, db, orig_hub, orig_road_term, dest_hub, dest_road_term,
+                websocket, session_id, orig_hub, orig_road_term, dest_hub, dest_road_term,
                 travel_date, hourly_value, start_search_time,
             ))
             if return_date:
-                inbound_road = build_antt_road_quotes(
-                    db, dest_hub, dest_road_term, orig_hub, orig_road_term, return_date
+                inbound_road, _ = await _run_db_work(
+                    _road_batch_by_id,
+                    (dest_hub.id, dest_road_term.id, orig_hub.id, orig_road_term.id),
+                    return_date, hourly_value, start_search_time, False,
                 )
-                all_inbound_quotes.extend(
-                    _process_and_score_quotes(inbound_road, hourly_time_value=hourly_value, db_session=db)
-                )
+                all_inbound_quotes.extend(inbound_road)
 
         # 3. Voos (e ClickBus, se ligada) à medida que respondem
         for completed_coroutine in asyncio.as_completed(tasks):
@@ -681,10 +770,12 @@ async def _run_search(
                 })
                 continue
 
-            processed_quotes = _process_and_score_quotes(
-                quotes=result["quotes"],
-                hourly_time_value=hourly_value,
-                db_session=db,
+            processed_quotes = await _run_db_work(
+                lambda session: _process_and_score_quotes(
+                    quotes=result["quotes"],
+                    hourly_time_value=hourly_value,
+                    db_session=session,
+                )
             )
 
             if "_return" in prov:
@@ -704,8 +795,8 @@ async def _run_search(
 
         # Referência histórica rodoviária (ANTT): faixa por classe, com a projeção do mês.
         try:
-            references = build_road_references(
-                db,
+            references = await _run_db_work(
+                build_road_references,
                 origin_city=orig_hub.name,
                 origin_state=orig_hub.state,
                 destination_city=dest_hub.name,
@@ -728,15 +819,15 @@ async def _run_search(
         # 4. Conexão Ônibus (ANTT) + Voo (Ignav)
         if interline_hubs:
             try:
-                interline_quotes = _build_interline_quotes(
+                interline_quotes = await _run_db_work(
+                    _build_interline_quotes_by_id,
                     origin=origin,
                     destination=destination,
-                    orig_hub=orig_hub,
-                    orig_road_term=orig_road_term,
-                    interline_hubs=interline_hubs,
+                    orig_hub_id=orig_hub.id,
+                    orig_road_term_id=orig_road_term.id,
+                    interline_hub_ids=[(h.id, r.id, a.id) for h, r, a in interline_hubs],
                     leg_results=leg_results,
                     hourly_value=hourly_value,
-                    db=db,
                 )
                 if interline_quotes:
                     all_outbound_quotes.extend(interline_quotes)
@@ -756,7 +847,8 @@ async def _run_search(
         # 5. Combinações Hacker Fares (se houver bilhetes de volta)
         if return_date and all_outbound_quotes and all_inbound_quotes:
             try:
-                hacker_combinations = generate_hacker_fares(
+                hacker_combinations = await asyncio.to_thread(
+                    generate_hacker_fares,
                     outbound_quotes=all_outbound_quotes,
                     inbound_quotes=all_inbound_quotes,
                     hourly_time_value=hourly_value,
@@ -772,14 +864,7 @@ async def _run_search(
                 logger.warning(f"Erro ao gerar combinações Hacker Fares: {hf_err}")
 
         # 6. Persistência com Smart Cache TTL (o pipeline descarta estimativas e conexões)
-        try:
-            if all_outbound_quotes:
-                process_and_persist_quotes(all_outbound_quotes, db)
-            if all_inbound_quotes:
-                process_and_persist_quotes(all_inbound_quotes, db)
-        except Exception as db_err:
-            db.rollback()
-            logger.warning(f"Erro não fatal ao salvar cotações no cache: {db_err}")
+        await _run_db_work(_persist_quotes, all_outbound_quotes, all_inbound_quotes)
 
         # 7. Emite SEARCH_COMPLETED com estatísticas finais
         total_search_elapsed = round((time.perf_counter() - start_search_time) * 1000, 1)
