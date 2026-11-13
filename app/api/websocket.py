@@ -43,7 +43,7 @@ from app.database import SessionLocal
 from app.geo.catchment import CatchmentFinder
 from app.geo.entity_resolver import EntityResolver
 from app.models import Hub, Terminal, ModalType, ProviderMapping
-from app.services.quote_pipeline import QuotePipeline, process_and_persist_quotes
+from app.services.quote_pipeline import QuotePipeline, TerminalCache, process_and_persist_quotes
 from app.services.road_quotes import (
     ROAD_ESTIMATE_PROVIDER,
     build_antt_legs_to_hub,
@@ -258,10 +258,13 @@ def _process_and_score_quotes(
     if not quotes:
         return []
 
-    # 1. Terminais canônicos, custo/tempo de transfer urbano e tempo porta a porta
+    # 1. Terminais canônicos, custo/tempo de transfer urbano e tempo porta a porta.
+    #    Os terminais do lote vêm do cache (os voos dividem os mesmos aeroportos) e os
+    #    prós/contras ficam para o passo 3, depois da deduplicação.
     if db_session is not None:
+        terminal_cache: TerminalCache = {}
         for q in quotes:
-            QuotePipeline.enrich_quote(q, db_session)
+            QuotePipeline.enrich_quote(q, db_session, terminal_cache=terminal_cache, evaluate=False)
 
     # 2. Deduplicação (assinatura usa os IDs canônicos resolvidos acima)
     deduped = deduplicate_quotes(quotes, attach_sellers_info=True)
