@@ -28,6 +28,12 @@ if settings.DATABASE_URL.startswith("sqlite"):
     def set_sqlite_pragma(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        # WAL: escritas vão para o arquivo -wal, então leitura e escrita não se bloqueiam (a
+        # busca lê séries e grava cotações em threads ao mesmo tempo). Com WAL, NORMAL só faz
+        # fsync nos checkpoints: uma queda de energia pode perder os últimos commits, sem
+        # corromper o banco. Banco em memória não tem WAL e ignora o pedido.
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 
 # Session factory

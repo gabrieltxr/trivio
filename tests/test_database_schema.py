@@ -36,3 +36,13 @@ def test_route_lookup_uses_route_key_index():
     detail = " ".join(str(row[-1]) for row in plan)
     assert "ix_route_monthly_fares_modal" not in detail
     assert "route_key=?" in detail
+
+
+def test_sqlite_connections_use_wal_with_normal_sync():
+    """Leitura e escrita não se bloqueiam (WAL) e o commit não faz fsync a cada transação."""
+    from app.database import engine
+
+    with engine.connect() as conn:
+        assert conn.exec_driver_sql("PRAGMA journal_mode").scalar() == "wal"
+        assert conn.exec_driver_sql("PRAGMA synchronous").scalar() == 1   # NORMAL
+        assert conn.exec_driver_sql("PRAGMA foreign_keys").scalar() == 1

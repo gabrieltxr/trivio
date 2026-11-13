@@ -32,6 +32,8 @@ htmlcov/
 *.sqlite
 *.sqlite3
 trivio_dev.db
+*.db-wal
+*.db-shm
 *.log
 
 # 4. Variáveis de Ambiente e Credenciais Sensíveis
