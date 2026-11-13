@@ -15,6 +15,19 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Quem pede menos movimento no sistema não vê as entradas animadas (spinners continuam). */
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in,
+  .animate-fade-in-up,
+  .animate-card-in,
+  .animate-dropdown {
+    animation: none !important;
+  }
+  html {
+    scroll-behavior: auto !important;
+  }
+}
+
 @layer utilities {
   .text-balance {
     text-wrap: balance;

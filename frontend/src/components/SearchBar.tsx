@@ -92,7 +92,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
             <button
               type="button"
               onClick={() => setTripType("round_trip")}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition ${
                 tripType === "round_trip"
                   ? "bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md shadow-orange-500/25"
                   : "text-slate-600 hover:text-slate-900"
@@ -105,7 +105,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
             <button
               type="button"
               onClick={() => setTripType("one_way")}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition ${
                 tripType === "one_way"
                   ? "bg-cyan-600 text-white shadow-md shadow-cyan-600/25"
                   : "text-slate-600 hover:text-slate-900"
@@ -117,7 +117,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
             <button
               type="button"
               onClick={() => setTripType("intermodal")}
-              className={`hidden sm:flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
+              className={`hidden sm:flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition ${
                 tripType === "intermodal"
                   ? "bg-sky-600 text-white shadow-md shadow-sky-600/25"
                   : "text-slate-600 hover:text-slate-900"
@@ -160,7 +160,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
                 type="button"
                 onClick={handleSwap}
                 aria-label="Inverter Origem e Destino"
-                className="w-10 h-10 rounded-full bg-white border border-slate-200 hover:border-orange-300 hover:bg-orange-50 text-slate-600 hover:text-orange-600 shadow-sm flex items-center justify-center transition-all active:scale-90"
+                className="w-10 h-10 rounded-full bg-white border border-slate-200 hover:border-orange-300 hover:bg-orange-50 text-slate-600 hover:text-orange-600 shadow-sm flex items-center justify-center transition active:scale-90"
               >
                 <ArrowRightLeft className="w-4 h-4" />
               </button>
@@ -222,7 +222,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
               <button
                 type="submit"
                 disabled={isLoading}
-                className="w-full h-14 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 active:scale-[0.98] text-white font-black rounded-2xl shadow-xl shadow-orange-500/30 transition-all flex items-center justify-center gap-2 text-base disabled:opacity-50"
+                className="w-full h-14 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 active:scale-[0.98] text-white font-black rounded-2xl shadow-xl shadow-orange-500/30 transition flex items-center justify-center gap-2 text-base disabled:opacity-50"
               >
                 {isLoading ? (
                   <span className="inline-block w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -263,7 +263,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
             <div
               className={`pt-4 mt-4 border-t border-slate-200 grid grid-cols-1 ${
                 tripType === "intermodal" ? "md:grid-cols-3" : "md:grid-cols-2"
-              } gap-6 text-sm text-slate-700 animate-fadeIn`}
+              } gap-6 text-sm text-slate-700 animate-fade-in-up`}
             >
               
               {/* Valor da Hora */}
@@ -305,7 +305,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
                       key={r}
                       type="button"
                       onClick={() => setRadiusKm(r)}
-                      className={`flex-1 py-1 rounded-lg text-xs font-bold border transition-all ${
+                      className={`flex-1 py-1 rounded-lg text-xs font-bold border transition ${
                         radiusKm === r
                           ? "bg-cyan-600 text-white border-cyan-600 shadow-sm"
                           : "bg-white text-slate-700 border-slate-200 hover:bg-slate-100"

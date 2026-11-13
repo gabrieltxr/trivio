@@ -31,6 +31,8 @@ libera o REST e o WebSocket, que recusa conexões de outras origens.
 | `src/app/` | Página única (`page.tsx`), layout e estilos globais |
 | `src/components/` | Barra de busca, autocomplete, cards de cotação e de Hacker Fares, cabeçalho |
 | `src/hooks/useSearchWebSocket.ts` | Conexão com `/ws/search` e tratamento dos eventos da busca |
+| `src/hooks/useFlipList.ts` | Anima a reordenação da lista de resultados (cards deslizam para a nova posição) |
+| `src/lib/format.ts` | Formatação de hora e duração compartilhada pelos cards |
 | `src/data/locations.ts` | Cliente do autocomplete: as localidades vêm só da API |
 | `src/types/` | Contratos TypeScript da API e do WebSocket |
 
