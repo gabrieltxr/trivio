@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useState } from "react";
 import {
   Plane,
   Bus,
@@ -18,14 +18,21 @@ import {
   Layers,
 } from "lucide-react";
 import { FareQuote, PriceThermometerData } from "@/types";
+import { formatDuration, formatTime } from "@/lib/format";
 
 type SortCriterion = "TRIVIO_SCORE" | "PRICE_ASC" | "DURATION_ASC";
 
 interface QuoteCardProps {
   quote: FareQuote;
   isBestScore?: boolean;
-  /** Critério da ordenação ativa: destaca o valor que está ordenando a lista. */
+  /**
+   * Critério da ordenação ativa, usado só no título da faixa do melhor card. O destaque do
+   * valor que ordena a lista vem do `data-sort` do contêiner (grupo `results`), por CSS:
+   * assim trocar a ordenação não redesenha todos os cards.
+   */
   sortBy?: SortCriterion;
+  /** Atraso da animação de entrada, para os cards de um mesmo lote entrarem em sequência. */
+  enterDelayMs?: number;
 }
 
 const BEST_BANNER: Record<SortCriterion, { title: string; subtitle: string }> = {
@@ -50,7 +57,13 @@ const PROVIDER_LABELS: Record<string, string> = {
   trivio_interliner: "Conexão Trivio",
 };
 
-export default function QuoteCard({ quote, isBestScore = false, sortBy = "TRIVIO_SCORE" }: QuoteCardProps) {
+// memo: um lote novo de cotações não redesenha os cards que já estavam na lista.
+export default memo(function QuoteCard({
+  quote,
+  isBestScore = false,
+  sortBy = "TRIVIO_SCORE",
+  enterDelayMs = 0,
+}: QuoteCardProps) {
   const [showDetails, setShowDetails] = useState(false);
 
   const isAir = quote.modal === "AIR";
@@ -63,25 +76,6 @@ export default function QuoteCard({ quote, isBestScore = false, sortBy = "TRIVIO
   const thermometer: PriceThermometerData | undefined = meta.price_thermometer;
   const isSimulated = meta.is_simulated === true;
   const bookingUrl = !isSimulated && typeof meta.booking_url === "string" ? meta.booking_url : null;
-
-  // Formata hora no padrão HH:MM
-  const formatTime = (isoString: string) => {
-    try {
-      const d = new Date(isoString);
-      return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-    } catch {
-      return isoString;
-    }
-  };
-
-  // Formata minutos em "Xh Ym"
-  const formatDuration = (minutes: number) => {
-    const h = Math.floor(minutes / 60);
-    const m = minutes % 60;
-    if (h === 0) return `${m}m`;
-    if (m === 0) return `${h}h`;
-    return `${h}h ${m}m`;
-  };
 
   // Cor e badge do Trivio Score
   const getScoreBadge = (score?: number | null) => {
@@ -134,11 +128,12 @@ export default function QuoteCard({ quote, isBestScore = false, sortBy = "TRIVIO
 
   return (
     <div
-      className={`w-full bg-white border rounded-2xl transition-all duration-200 ${
+      className={`w-full bg-white border rounded-2xl transition-[border-color,box-shadow] duration-200 animate-card-in ${
         isBestScore
           ? "border-emerald-400 shadow-lg shadow-emerald-500/10 ring-1 ring-emerald-400/40"
           : "border-slate-200/90 shadow-sm hover:shadow-md hover:border-slate-300"
       }`}
+      style={enterDelayMs ? { animationDelay: `${enterDelayMs}ms` } : undefined}
     >
       {/* Faixa Destaque de Melhor Score */}
       {isBestScore && (
@@ -244,9 +239,7 @@ export default function QuoteCard({ quote, isBestScore = false, sortBy = "TRIVIO
               {/* Indicador de Rota e Duração */}
               <div className="sm:col-span-6 flex flex-col items-center justify-center text-center px-2">
                 <div
-                  className={`flex items-center gap-1.5 text-xs font-bold text-slate-600 mb-1 rounded-lg px-2 py-0.5 ${
-                    sortBy === "DURATION_ASC" ? "bg-cyan-50 ring-1 ring-cyan-300 text-cyan-900" : ""
-                  }`}
+                  className="flex items-center gap-1.5 text-xs font-bold text-slate-600 mb-1 rounded-lg px-2 py-0.5 group-data-[sort=duration]/results:bg-cyan-50 group-data-[sort=duration]/results:ring-1 group-data-[sort=duration]/results:ring-cyan-300 group-data-[sort=duration]/results:text-cyan-900"
                 >
                   <Clock className="w-3.5 h-3.5 text-cyan-600" />
                   <span>{formatDuration(quote.duration_minutes)}</span>
@@ -293,9 +286,7 @@ export default function QuoteCard({ quote, isBestScore = false, sortBy = "TRIVIO
           <div className="lg:border-l lg:border-slate-100 lg:pl-6 flex flex-row lg:flex-col items-center lg:items-end justify-between gap-4 min-w-[200px]">
             
             <div
-              className={`text-left lg:text-right rounded-xl px-2 py-1 ${
-                sortBy === "PRICE_ASC" ? "bg-cyan-50 ring-1 ring-cyan-300" : ""
-              }`}
+              className="text-left lg:text-right rounded-xl px-2 py-1 group-data-[sort=price]/results:bg-cyan-50 group-data-[sort=price]/results:ring-1 group-data-[sort=price]/results:ring-cyan-300"
             >
               <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
                 Custo Efetivo Real
@@ -327,7 +318,7 @@ export default function QuoteCard({ quote, isBestScore = false, sortBy = "TRIVIO
                   href={bookingUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 active:scale-95 text-white font-bold px-4 py-2 rounded-xl text-xs sm:text-sm shadow-md shadow-orange-500/20 transition-all flex items-center gap-1.5"
+                  className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 active:scale-95 text-white font-bold px-4 py-2 rounded-xl text-xs sm:text-sm shadow-md shadow-orange-500/20 transition flex items-center gap-1.5"
                 >
                   <span>Ver Oferta</span>
                   <ExternalLink className="w-3.5 h-3.5" />
@@ -360,7 +351,7 @@ export default function QuoteCard({ quote, isBestScore = false, sortBy = "TRIVIO
 
         {/* Gaveta Expansível de Detalhes, Prós & Contras e Decomposição Financeira */}
         {showDetails && (
-          <div className="mt-5 pt-5 border-t border-slate-100 grid grid-cols-1 md:grid-cols-2 gap-6 animate-fadeIn text-xs">
+          <div className="mt-5 pt-5 border-t border-slate-100 grid grid-cols-1 md:grid-cols-2 gap-6 animate-fade-in-up text-xs">
             
             {/* Coluna 1: Decomposição do Custo Real Porta a Porta */}
             <div className="bg-slate-50/80 p-4 rounded-xl border border-slate-200/80 space-y-2">
@@ -489,4 +480,4 @@ export default function QuoteCard({ quote, isBestScore = false, sortBy = "TRIVIO
       </div>
     </div>
   );
-}
+});

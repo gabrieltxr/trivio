@@ -63,7 +63,7 @@ export default function TrustPillars() {
           return (
             <div
               key={idx}
-              className="bg-white border border-slate-200/90 rounded-2xl p-6 transition-all hover:shadow-xl hover:shadow-slate-200/60 hover:-translate-y-1 flex flex-col justify-between group"
+              className="bg-white border border-slate-200/90 rounded-2xl p-6 transition hover:shadow-xl hover:shadow-slate-200/60 hover:-translate-y-1 flex flex-col justify-between group"
             >
               <div>
                 <div className="flex items-center justify-between mb-4">
@@ -83,7 +83,7 @@ export default function TrustPillars() {
                 </p>
               </div>
 
-              <div className={`pt-6 mt-6 border-t border-slate-100 flex items-center gap-1.5 text-xs font-bold transition-all group-hover:translate-x-1 ${pillar.linkHover}`}>
+              <div className={`pt-6 mt-6 border-t border-slate-100 flex items-center gap-1.5 text-xs font-bold transition group-hover:translate-x-1 ${pillar.linkHover}`}>
                 <span>Ver metodologia completa</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </div>

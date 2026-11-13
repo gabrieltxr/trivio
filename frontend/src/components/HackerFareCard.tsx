@@ -2,6 +2,7 @@
 
 import { Sparkles, ArrowRight, Plane, Bus, Clock, ShieldCheck, ExternalLink } from "lucide-react";
 import { HackerFareCombination } from "@/types";
+import { formatDuration, formatTime } from "@/lib/format";
 
 interface HackerFareCardProps {
   combination: HackerFareCombination;
@@ -9,23 +10,6 @@ interface HackerFareCardProps {
 
 export default function HackerFareCard({ combination }: HackerFareCardProps) {
   const { outbound, inbound } = combination;
-
-  const formatTime = (isoString: string) => {
-    try {
-      const d = new Date(isoString);
-      return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-    } catch {
-      return isoString;
-    }
-  };
-
-  const formatDuration = (minutes: number) => {
-    const h = Math.floor(minutes / 60);
-    const m = minutes % 60;
-    if (h === 0) return `${m}m`;
-    if (m === 0) return `${h}h`;
-    return `${h}h ${m}m`;
-  };
 
   const getModalIcon = (modal: string) => {
     if (modal === "AIR") {
@@ -35,7 +19,7 @@ export default function HackerFareCard({ combination }: HackerFareCardProps) {
   };
 
   return (
-    <div className="w-full bg-gradient-to-r from-amber-500/10 via-orange-500/5 to-cyan-500/10 p-[2px] rounded-3xl shadow-xl shadow-amber-500/10 mb-8 animate-fadeIn">
+    <div className="w-full bg-gradient-to-r from-amber-500/10 via-orange-500/5 to-cyan-500/10 p-[2px] rounded-3xl shadow-xl shadow-amber-500/10 mb-8 animate-card-in">
       <div className="bg-white rounded-[22px] p-6 sm:p-7 border border-amber-200/60">
         
         {/* Cabeçalho da Hacker Fare */}
@@ -161,7 +145,7 @@ export default function HackerFareCard({ combination }: HackerFareCardProps) {
                   const urlOut = outbound.route_metadata?.booking_url;
                   if (urlOut) window.open(urlOut, "_blank");
                 }}
-                className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 active:scale-95 text-white font-black px-5 py-3 rounded-xl text-sm shadow-md shadow-orange-500/25 transition-all flex items-center gap-2"
+                className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 active:scale-95 text-white font-black px-5 py-3 rounded-xl text-sm shadow-md shadow-orange-500/25 transition flex items-center gap-2"
               >
                 <span>Reservar Hacker Fare</span>
                 <ExternalLink className="w-4 h-4 stroke-[2.5]" />

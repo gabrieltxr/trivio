@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import Image from "next/image";
 import Header from "@/components/Header";
 import SearchBar from "@/components/SearchBar";
@@ -9,6 +9,7 @@ import QuoteCard from "@/components/QuoteCard";
 import HackerFareCard from "@/components/HackerFareCard";
 import SkeletonCard from "@/components/SkeletonCard";
 import { useSearchWebSocket, ProviderNotice } from "@/hooks/useSearchWebSocket";
+import { useFlipList } from "@/hooks/useFlipList";
 import { SearchParams } from "@/types";
 import { displayCode } from "@/data/locations";
 import {
@@ -25,6 +26,16 @@ import {
 
 type SortOption = "TRIVIO_SCORE" | "PRICE_ASC" | "DURATION_ASC";
 type ModalFilter = "ALL" | "AIR" | "ROAD" | "HYBRID";
+
+/**
+ * Valor do `data-sort` da lista, lido pelo QuoteCard via `group-data-[sort=...]` para destacar
+ * o valor que ordena. Sem "_": dentro de [...] o Tailwind troca "_" por espaço.
+ */
+const SORT_ATTR: Record<SortOption, string> = {
+  TRIVIO_SCORE: "score",
+  PRICE_ASC: "price",
+  DURATION_ASC: "duration",
+};
 
 const NAMES: Record<string, string> = { clickbus: "A ClickBus", ignav: "O provedor aéreo" };
 
@@ -87,11 +98,11 @@ export default function Home() {
     setActiveParams(params);
     startSearch(params);
 
-    // Rola suavemente para a área de resultados
-    const resultsElem = document.getElementById("results-section");
-    if (resultsElem) {
-      resultsElem.scrollIntoView({ behavior: "smooth" });
-    }
+    // Rola suavemente para os resultados depois do commit: a barra de status e os skeletons
+    // já estão no lugar, então o layout não muda no meio da rolagem.
+    requestAnimationFrame(() => {
+      document.getElementById("results-section")?.scrollIntoView({ behavior: "smooth" });
+    });
   };
 
   // Filtra e ordena as cotações reativamente conforme chegam no streaming
@@ -132,6 +143,25 @@ export default function Home() {
     return result;
   }, [quotes, modalFilter, sortBy]);
 
+  // Reordenação animada: os cards deslizam para a nova posição quando chega um lote,
+  // quando a ordenação muda ou quando o filtro tira cards do meio da lista.
+  const listRef = useRef<HTMLDivElement>(null);
+  useFlipList(listRef, filteredAndSortedQuotes);
+
+  // Atraso de entrada por card, fixado na primeira vez que ele aparece: os cards de um mesmo
+  // lote entram em sequência e quem já estava na tela não recebe uma prop nova (memo intacto).
+  const enterDelays = useRef(new Map<string, number>());
+  if (quotes.length === 0) enterDelays.current.clear();
+  let freshInRender = 0;
+  const enterDelayFor = (key: string) => {
+    let delay = enterDelays.current.get(key);
+    if (delay === undefined) {
+      delay = Math.min(freshInRender++, 6) * 55;
+      enterDelays.current.set(key, delay);
+    }
+    return delay;
+  };
+
   return (
     <div className="flex flex-col min-h-screen bg-white text-slate-900">
       {/* 1. Header Corporativo com Utility Bar */}
@@ -141,8 +171,10 @@ export default function Home() {
       <section className="relative pt-12 pb-24 px-4 sm:px-8 bg-gradient-to-b from-white via-cyan-50/20 to-slate-50/80 border-b border-slate-200/80 overflow-hidden">
         {/* Glow de Fundo e Padrão de Grade Geodésica Clean */}
         <div className="absolute inset-0 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] [background-size:24px_24px] opacity-40 pointer-events-none" />
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[700px] h-[350px] bg-cyan-400/10 rounded-full blur-[130px] pointer-events-none" />
-        <div className="absolute top-1/3 right-1/4 w-[400px] h-[300px] bg-orange-400/10 rounded-full blur-[110px] pointer-events-none" />
+        {/* Brilhos com gradiente radial em vez de filter: blur(130px): mesmo visual, sem o filtro
+            caro que o navegador repinta ao rolar. */}
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1100px] h-[650px] bg-[radial-gradient(closest-side,rgba(34,211,238,0.10),transparent)] pointer-events-none" />
+        <div className="absolute top-1/3 right-1/4 translate-x-1/4 -translate-y-1/4 w-[700px] h-[560px] bg-[radial-gradient(closest-side,rgba(251,146,60,0.10),transparent)] pointer-events-none" />
 
         <div className="max-w-7xl mx-auto relative z-10">
           {/* Título Principal de Impacto */}
@@ -179,7 +211,7 @@ export default function Home() {
         
         {/* Barra de Status e Progresso de Streaming */}
         {activeParams && (
-          <div className="mb-8 p-5 rounded-2xl bg-slate-50 border border-slate-200/90 shadow-sm">
+          <div className="mb-8 p-5 rounded-2xl bg-slate-50 border border-slate-200/90 shadow-sm animate-fade-in-up">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               
               <div className="flex items-center gap-3">
@@ -239,7 +271,7 @@ export default function Home() {
 
             {/* Barra de Filtros e Ordenação */}
             {quotes.length > 0 && (
-              <div className="mt-5 pt-4 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-4 text-xs font-semibold">
+              <div className="mt-5 pt-4 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-4 text-xs font-semibold animate-fade-in">
                 
                 {/* Filtro por Modal */}
                 <div className="flex items-center gap-1.5">
@@ -260,7 +292,7 @@ export default function Home() {
                         key={f.id}
                         type="button"
                         onClick={() => setModalFilter(f.id as ModalFilter)}
-                        className={`px-3 py-1.5 rounded-xl transition-all flex items-center gap-1.5 ${
+                        className={`px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 ${
                           modalFilter === f.id
                             ? "bg-slate-900 text-white shadow-sm"
                             : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
@@ -297,7 +329,7 @@ export default function Home() {
 
         {/* Aviso das estimativas: ônibus pela ANTT e conexões ônibus + voo */}
         {quotes.some((q) => q.route_metadata?.is_simulated) && (
-          <div className="mb-6 p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold">
+          <div className="mb-6 p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold animate-fade-in-up">
             As opções de ônibus usam dados abertos da ANTT: empresa e horário da grade oficial das linhas
             interestaduais (quando a rota tem grade; senão, horário ilustrativo) e preço médio pago na
             classe, não a tarifa daquela partida. Elas não estão disponíveis para compra. Nas conexões, só
@@ -307,14 +339,14 @@ export default function Home() {
 
         {/* Mensagem de Erro se houver */}
         {error && (
-          <div className="mb-6 p-4 rounded-2xl bg-red-50 border border-red-200 text-red-800 text-xs font-semibold">
+          <div className="mb-6 p-4 rounded-2xl bg-red-50 border border-red-200 text-red-800 text-xs font-semibold animate-fade-in-up">
             {error}
           </div>
         )}
 
         {/* Referência histórica rodoviária (ANTT): fica fora do ranking, nunca é uma oferta */}
         {roadReferences.length > 0 && (
-          <div className="mb-6 p-4 rounded-2xl bg-slate-50 border border-slate-200">
+          <div className="mb-6 p-4 rounded-2xl bg-slate-50 border border-slate-200 animate-fade-in-up">
             <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-700 mb-1">
               Referência histórica de ônibus (ANTT)
             </h3>
@@ -362,7 +394,7 @@ export default function Home() {
               <div
                 key={`${notice.provider}-${notice.reason ?? "erro"}`}
                 role="status"
-                className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold"
+                className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold animate-fade-in-up"
               >
                 {providerNoticeText(notice)}
               </div>
@@ -385,26 +417,41 @@ export default function Home() {
 
         {/* 2. Lista de Cards de Cotação */}
         {filteredAndSortedQuotes.length > 0 ? (
-          <div className="space-y-4">
-            {filteredAndSortedQuotes.map((quote, idx) => (
-              <QuoteCard
-                key={quote.dedup_signature || idx}
-                quote={quote}
-                isBestScore={idx === 0}
-                sortBy={sortBy}
-              />
-            ))}
+          <div ref={listRef} data-sort={SORT_ATTR[sortBy]} className="group/results relative flex flex-col gap-4">
+            {filteredAndSortedQuotes.map((quote, idx) => {
+              const key = quote.dedup_signature || String(idx);
+              return (
+                // content-visibility: o navegador pula estilo, layout e pintura dos cards fora da
+                // tela (reordenar 150 cards custava ~60 ms só de recálculo). Essa propriedade
+                // recorta o que vaza do elemento, então o padding com margem negativa dá espaço
+                // para a sombra e para a animação de entrada sem mudar o espaçamento visível.
+                <div
+                  key={key}
+                  data-flip-key={key}
+                  className="-m-4 p-4 [content-visibility:auto] [contain-intrinsic-size:auto_280px]"
+                >
+                  <QuoteCard
+                    quote={quote}
+                    isBestScore={idx === 0}
+                    // Só o melhor card usa o critério (título da faixa); os demais recebem
+                    // um valor fixo para o memo não redesenhá-los ao trocar a ordenação.
+                    sortBy={idx === 0 ? sortBy : "TRIVIO_SCORE"}
+                    enterDelayMs={enterDelayFor(key)}
+                  />
+                </div>
+              );
+            })}
           </div>
         ) : isSearching ? (
           /* Skeletons enquanto os primeiros lotes chegam */
-          <div className="space-y-4">
+          <div className="space-y-4 animate-fade-in">
             <SkeletonCard />
             <SkeletonCard />
             <SkeletonCard />
           </div>
         ) : activeParams ? (
           /* Nenhuma opção encontrada */
-          <div className="border border-slate-200 bg-slate-50 rounded-3xl p-12 text-center text-slate-600 text-sm">
+          <div className="border border-slate-200 bg-slate-50 rounded-3xl p-12 text-center text-slate-600 text-sm animate-fade-in">
             Nenhuma rota disponível encontrada para {displayCode(activeParams.origin)} ➔ {displayCode(activeParams.destination)} na data selecionada.
           </div>
         ) : (
@@ -425,6 +472,7 @@ export default function Home() {
                 src="/logo_icon.png"
                 alt="Trivio Icon"
                 fill
+                sizes="32px"
                 className="object-contain p-0.5"
               />
             </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, startTransition } from "react";
 import { FareQuote, HackerFareCombination, SearchParams } from "@/types";
 
 export interface SearchCompletedStats {
@@ -137,30 +137,24 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
           // Chegada de novo lote de passagens ("pipocando" na interface)
           const newBatch: FareQuote[] = data.quotes || [];
           if (newBatch.length > 0) {
-            setQuotes((prevQuotes) => {
-              // Deduplica por dedup_signature mantendo a cotação mais recente ou barata
-              const quoteMap = new Map<string, FareQuote>();
-              for (const q of prevQuotes) {
-                quoteMap.set(q.dedup_signature, q);
-              }
-              for (const q of newBatch) {
-                const existing = quoteMap.get(q.dedup_signature);
-                if (!existing || q.total_effective_price < existing.total_effective_price) {
+            // Transição: o render dos lotes cede a vez a cliques, digitação e animações em curso.
+            startTransition(() => {
+              setQuotes((prevQuotes) => {
+                // Deduplica por dedup_signature mantendo a cotação mais barata. Quem já estava
+                // na lista mantém a mesma referência, então o card memoizado não redesenha.
+                // A ordenação fica com a página, que já ordena pelo critério escolhido.
+                const quoteMap = new Map<string, FareQuote>();
+                for (const q of prevQuotes) {
                   quoteMap.set(q.dedup_signature, q);
                 }
-              }
-
-              // Reordena pelo menor Trivio Score (melhor custo-benefício e menor atrito no topo)
-              const sorted = Array.from(quoteMap.values()).sort((a, b) => {
-                const scoreA = a.trivio_score ?? Number.MAX_VALUE;
-                const scoreB = b.trivio_score ?? Number.MAX_VALUE;
-                if (scoreA !== scoreB) {
-                  return scoreA - scoreB;
+                for (const q of newBatch) {
+                  const existing = quoteMap.get(q.dedup_signature);
+                  if (!existing || q.total_effective_price < existing.total_effective_price) {
+                    quoteMap.set(q.dedup_signature, q);
+                  }
                 }
-                return a.total_effective_price - b.total_effective_price;
+                return Array.from(quoteMap.values());
               });
-
-              return sorted;
             });
           }
           break;
@@ -203,14 +197,18 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
         }
 
         case "SEARCH_COMPLETED": {
-          setIsSearching(false);
-          setCompletedStats({
-            totalQuotes: data.total_quotes,
-            totalElapsedMs: data.total_elapsed_ms,
-            cheapestPrice: data.cheapest_effective_price,
-            bestTrivioScore: data.best_trivio_score,
-            isSimulated: data.is_simulated === true,
-            timestamp: data.timestamp,
+          // Mesma transição dos lotes: a conclusão não pode aparecer antes do último lote,
+          // senão a tela mostraria "nenhuma rota" por um instante.
+          startTransition(() => {
+            setIsSearching(false);
+            setCompletedStats({
+              totalQuotes: data.total_quotes,
+              totalElapsedMs: data.total_elapsed_ms,
+              cheapestPrice: data.cheapest_effective_price,
+              bestTrivioScore: data.best_trivio_score,
+              isSimulated: data.is_simulated === true,
+              timestamp: data.timestamp,
+            });
           });
           break;
         }

@@ -38,7 +38,7 @@ export default function Header({ onSearchClick }: HeaderProps) {
       </div>
 
       {/* 2. Main Navigation Bar (White Clean com Backdrop Blur) */}
-      <nav className="sticky top-0 z-50 backdrop-blur-md bg-white/95 border-b border-slate-200/80 shadow-sm shadow-slate-100">
+      <nav className="sticky top-0 z-50 bg-white border-b border-slate-200/80 shadow-sm shadow-slate-100">
         <div className="max-w-7xl mx-auto px-4 sm:px-8 h-20 flex items-center justify-between">
           {/* Logo Oficial Trivio (Paleta Exata do Logo) */}
           <Link href="/" className="flex items-center gap-3 group">
@@ -86,7 +86,7 @@ export default function Header({ onSearchClick }: HeaderProps) {
           <div className="flex items-center gap-3">
             <button
               onClick={onSearchClick}
-              className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 active:scale-95 text-white font-bold px-5 py-2.5 rounded-xl text-sm shadow-md shadow-orange-500/20 transition-all flex items-center gap-2"
+              className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 active:scale-95 text-white font-bold px-5 py-2.5 rounded-xl text-sm shadow-md shadow-orange-500/20 transition flex items-center gap-2"
             >
               <Search className="w-4 h-4 stroke-[2.5]" />
               <span>Nova Busca</span>

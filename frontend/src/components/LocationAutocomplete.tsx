@@ -261,7 +261,7 @@ export default function LocationAutocomplete({
     <div ref={containerRef} className="relative w-full">
       {/* Box do Campo com Destaque de Foco por Tema */}
       <div
-        className={`bg-slate-50 hover:bg-white focus-within:bg-white border rounded-2xl p-3 transition-all relative ${
+        className={`bg-slate-50 hover:bg-white focus-within:bg-white border rounded-2xl p-3 transition relative ${
           isOpen
             ? isCyan
               ? "border-cyan-500 ring-2 ring-cyan-500/20 bg-white"
@@ -340,7 +340,7 @@ export default function LocationAutocomplete({
 
       {/* Dropdown Flutuante de Preenchimento Automático */}
       {isOpen && (
-        <div className="absolute top-[calc(100%+6px)] left-0 right-0 bg-white border border-slate-200 rounded-2xl shadow-2xl p-2 z-50 max-h-80 overflow-y-auto animate-in fade-in slide-in-from-top-1 duration-150">
+        <div className="absolute top-[calc(100%+6px)] left-0 right-0 bg-white border border-slate-200 rounded-2xl shadow-2xl p-2 z-50 max-h-80 overflow-y-auto origin-top animate-dropdown">
           <div className="px-3 py-1.5 text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between border-b border-slate-100 mb-1">
             <span>
               {inputValue.trim()
@@ -387,7 +387,7 @@ export default function LocationAutocomplete({
                     key={item.id}
                     onMouseEnter={() => setHighlightedIndex(index)}
                     onClick={() => handleSelect(item)}
-                    className={`flex items-center justify-between p-2.5 rounded-xl cursor-pointer transition-all ${
+                    className={`flex items-center justify-between p-2.5 rounded-xl cursor-pointer transition ${
                       isHighlighted
                         ? isCyan
                           ? "bg-cyan-50/80 text-cyan-950"
