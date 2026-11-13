@@ -203,3 +203,68 @@ def test_db_historical_query_and_batch_enrichment(mock_db_session):
     therm2 = quotes[1]["route_metadata"]["price_thermometer"]
     assert therm2["status"] == "HIGH"
     assert therm2["sample_size"] == 10
+
+
+def _air_quote(price: float):
+    from app.collectors.base import StandardizedQuote
+
+    dep = datetime(2026, 12, 10, 10, 0, tzinfo=timezone.utc)
+    return StandardizedQuote(
+        origin_external_id="CGH", destination_external_id="SDU", modal="AIR",
+        provider_source="ignav", carrier_name="LATAM", service_class="ECONOMY",
+        departure_time=dep, arrival_time=dep + timedelta(minutes=60), duration_minutes=60,
+        base_price=price,
+    )
+
+
+def test_batch_reads_anac_band_once_per_route(monkeypatch):
+    """Os voos de um lote dividem a rota: a faixa da ANAC sai do banco uma vez só."""
+    from app.analyzers import price_thermometer as pt
+
+    calls = []
+
+    def fake_band(db, origin_icao, destination_icao, window_months=pt.ANAC_WINDOW_MONTHS):
+        calls.append((origin_icao, destination_icao))
+        return pt.AirFareBand(
+            months=["2026-01", "2026-02", "2026-03"], seats=5000, min_brl=150.0, p10_brl=200.0,
+            p25_brl=260.0, p50_brl=330.0, p75_brl=420.0, p90_brl=520.0, max_brl=900.0,
+        )
+
+    monkeypatch.setattr(pt, "fetch_air_fare_band", fake_band)
+    quotes = [_air_quote(price) for price in (220.0, 330.0, 480.0, 700.0)]
+
+    enrich_quotes_batch_with_thermometer(quotes, db=object())
+
+    assert calls == [("SBSP", "SBRJ")]
+    assert all(q.route_metadata["price_thermometer"]["source"] == pt.ANAC_SOURCE for q in quotes)
+
+
+def test_batch_reads_antt_series_once_per_route_and_class(monkeypatch):
+    """Na série da ANTT a chave é rota + classe: classes diferentes leem séries diferentes."""
+    from app.analyzers import price_thermometer as pt
+    from app.collectors.base import StandardizedQuote
+
+    calls = []
+
+    def fake_series(db, origin_city, origin_state, destination_city, destination_state, service_class, modal=None):
+        calls.append(service_class)
+        return [(f"2026-{m:02d}", 150.0 + m, 1000) for m in range(1, 9)]
+
+    monkeypatch.setattr(pt, "fetch_route_monthly_means", fake_series)
+    dep = datetime(2026, 12, 10, 22, 0, tzinfo=timezone.utc)
+    meta = {"origin_city": "São Paulo", "origin_state": "SP", "destination_city": "Rio de Janeiro",
+            "destination_state": "RJ"}
+    quotes = [
+        StandardizedQuote(
+            origin_external_id="TIETE", destination_external_id="NOVO_RIO", modal="ROAD",
+            provider_source="clickbus", carrier_name="Cometa", service_class=cls,
+            departure_time=dep, arrival_time=dep + timedelta(hours=6), duration_minutes=360,
+            base_price=price, route_metadata=dict(meta),
+        )
+        for cls, price in (("LEITO", 200.0), ("LEITO", 150.0), ("CONVENCIONAL", 120.0), ("LEITO", 170.0))
+    ]
+
+    enrich_quotes_batch_with_thermometer(quotes, db=object())
+
+    assert sorted(calls) == ["CONVENCIONAL", "LEITO"]
+    assert all(q.route_metadata["price_thermometer"]["source"] == "antt_monitriip" for q in quotes)
