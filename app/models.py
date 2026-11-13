@@ -102,7 +102,9 @@ class FareQuote(Base):
     origin_terminal_id = Column(Integer, ForeignKey("terminals.id"), nullable=False, index=True)
     destination_terminal_id = Column(Integer, ForeignKey("terminals.id"), nullable=False, index=True)
     
-    modal = Column(SQLEnum(ModalType), nullable=False, index=True)
+    # Sem índice próprio: só dois valores. Sem estatísticas, o SQLite preferia esse índice
+    # ao das colunas seletivas (terminais) e varria metade da tabela.
+    modal = Column(SQLEnum(ModalType), nullable=False)
     provider_source = Column(String(50), nullable=False)  # Quem forneceu o dado (ex: 'ignav')
     carrier_name = Column(String(100), nullable=False)    # Quem opera (ex: 'Azul', 'Viação Guanabara')
     service_class = Column(String(50))                    # Ex: 'ECONOMY', 'SEMI_LEITO', 'LEITO'
@@ -159,7 +161,9 @@ class RouteMonthlyFare(Base):
     destination_city = Column(String(120), nullable=False)
     destination_state = Column(String(2))
 
-    modal = Column(SQLEnum(ModalType), nullable=False, default=ModalType.ROAD, index=True)
+    # Sem índice próprio (ver ensure_schema): só dois valores, ~300 mil linhas ROAD. Sem
+    # estatísticas, o SQLite o escolhia no lugar do índice único de route_key (56 ms x 0,15 ms).
+    modal = Column(SQLEnum(ModalType), nullable=False, default=ModalType.ROAD)
     service_class = Column(String(50), nullable=False)
 
     trip_month = Column(String(7), nullable=False, index=True)       # 'AAAA-MM'

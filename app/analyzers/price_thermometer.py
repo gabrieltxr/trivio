@@ -11,7 +11,7 @@ sobre o histórico de cotações armazenadas no banco, classificando cada oferta
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import polars as pl
 from sqlalchemy import select
@@ -278,21 +278,42 @@ def _ticket_price(quote: Any) -> float:
     return float(_get_val(quote, "total_effective_price", 0.0) or 0.0)
 
 
-def _evaluate_with_official_statistics(quote: Any, db: Session) -> Optional[PriceThermometerResult]:
+OfficialSeriesCache = Dict[Tuple[Any, ...], Any]
+"""Séries oficiais já lidas num lote: ("antt", route_key, classe) e ("anac", route_key)."""
+
+
+def _cached(cache: Optional[OfficialSeriesCache], key: Tuple[Any, ...], fetch: Callable[[], Any]) -> Any:
+    if cache is None:
+        return fetch()
+    if key not in cache:
+        cache[key] = fetch()
+    return cache[key]
+
+
+def _evaluate_with_official_statistics(
+    quote: Any,
+    db: Session,
+    cache: Optional[OfficialSeriesCache] = None,
+) -> Optional[PriceThermometerResult]:
     """Classifica a cotação contra a série oficial do seu modal.
 
     ROAD usa a ANTT (Monitriip); AIR usa a ANAC (tarifas domésticas). Devolve None,
     e o termômetro recorre ao histórico próprio, quando não há série suficiente.
+    Com `cache`, cotações da mesma rota leem a série do banco uma vez só.
     """
     modal = str(_get_val(quote, "modal", "")).upper()
     if modal == "AIR":
-        return _evaluate_with_anac_statistics(quote, db)
+        return _evaluate_with_anac_statistics(quote, db, cache)
     if "ROAD" in modal:   # inclui rotas híbridas, como antes
-        return _evaluate_with_antt_statistics(quote, db)
+        return _evaluate_with_antt_statistics(quote, db, cache)
     return None
 
 
-def _evaluate_with_antt_statistics(quote: Any, db: Session) -> Optional[PriceThermometerResult]:
+def _evaluate_with_antt_statistics(
+    quote: Any,
+    db: Session,
+    cache: Optional[OfficialSeriesCache] = None,
+) -> Optional[PriceThermometerResult]:
     """Classifica a cotação rodoviária contra a série mensal da ANTT da rota e classe.
 
     Devolve None quando a rota não tem município de origem e destino, não tem
@@ -309,14 +330,17 @@ def _evaluate_with_antt_statistics(quote: Any, db: Session) -> Optional[PriceThe
     if not origin_city or not destination_city or not service_class:
         return None
 
-    series = fetch_route_monthly_means(
+    route_key = build_route_key(
+        str(origin_city), meta.get("origin_state"), str(destination_city), meta.get("destination_state"),
+    )
+    series = _cached(cache, ("antt", route_key, service_class), lambda: fetch_route_monthly_means(
         db=db,
         origin_city=str(origin_city),
         origin_state=meta.get("origin_state"),
         destination_city=str(destination_city),
         destination_state=meta.get("destination_state"),
         service_class=service_class,
-    )
+    ))
     if len(series) < MIN_OFFICIAL_MONTHS:
         return None
 
@@ -502,7 +526,11 @@ def evaluate_against_air_band(price: float, band: AirFareBand) -> PriceThermomet
     )
 
 
-def _evaluate_with_anac_statistics(quote: Any, db: Session) -> Optional[PriceThermometerResult]:
+def _evaluate_with_anac_statistics(
+    quote: Any,
+    db: Session,
+    cache: Optional[OfficialSeriesCache] = None,
+) -> Optional[PriceThermometerResult]:
     """Classifica a cotação aérea contra as tarifas vendidas na rota (ANAC).
 
     Compara só a tarifa base: o valor registrado na ANAC não inclui taxa de
@@ -517,7 +545,8 @@ def _evaluate_with_anac_statistics(quote: Any, db: Session) -> Optional[PriceThe
     if base_price <= 0.0:
         return None
 
-    band = fetch_air_fare_band(db, origin_icao, dest_icao)
+    route_key = build_route_key(origin_icao, None, dest_icao, None)
+    band = _cached(cache, ("anac", route_key), lambda: fetch_air_fare_band(db, origin_icao, dest_icao))
     if band is None or len(band.months) < MIN_ANAC_MONTHS or band.seats < MIN_ANAC_SEATS:
         return None
 
@@ -609,6 +638,8 @@ def enrich_quotes_batch_with_thermometer(
 
     # Cache de histórico por par de rota e modal
     corridor_cache: Dict[Tuple[int, int, str], List[float]] = {}
+    # Séries oficiais (ANTT/ANAC) por rota: os voos de um lote dividem a mesma
+    official_cache: OfficialSeriesCache = {}
 
     for q in quotes:
         if _is_antt_estimate(q):
@@ -616,7 +647,7 @@ def enrich_quotes_batch_with_thermometer(
 
         # 1. Série oficial do modal tem prioridade (ANTT/ANAC: preço transacionado)
         if db is not None:
-            official = _evaluate_with_official_statistics(q, db)
+            official = _evaluate_with_official_statistics(q, db, official_cache)
             if official is not None:
                 _attach_thermometer(q, official)
                 continue

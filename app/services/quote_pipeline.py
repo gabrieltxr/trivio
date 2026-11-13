@@ -28,22 +28,42 @@ from app.models import FareQuote, ModalType, ProviderMapping, Terminal
 logger = logging.getLogger("trivio.services.quote_pipeline")
 
 
+TerminalCache = Dict[Tuple[str, str], Optional[Terminal]]
+"""Terminais já resolvidos num lote, por (provedor, id externo). Vale só para uma Session."""
+
+
 def find_terminal_by_external_id(
     session: Session,
     provider_name: str,
     external_id: str,
+    cache: Optional[TerminalCache] = None,
 ) -> Optional[Terminal]:
-    """Busca o Terminal canônico através de seu mapeamento com o provedor."""
+    """Busca o Terminal canônico através de seu mapeamento com o provedor.
+
+    Com `cache`, cada par (provedor, id externo) vai ao banco uma vez só: num lote de
+    voos, todos compartilham os mesmos dois aeroportos.
+    """
     if not external_id:
         return None
 
+    key = (provider_name.strip().lower(), external_id.strip())
+    if cache is not None and key in cache:
+        return cache[key]
+    terminal = _lookup_terminal(session, *key)
+    if cache is not None:
+        cache[key] = terminal
+    return terminal
+
+
+def _lookup_terminal(session: Session, provider_name: str, external_id: str) -> Optional[Terminal]:
+    """Consulta o banco (provedor já normalizado e id externo sem espaços)."""
     # 1. Busca direta no ProviderMapping
     stmt = (
         select(Terminal)
         .join(ProviderMapping, ProviderMapping.terminal_id == Terminal.id)
         .where(
-            ProviderMapping.provider_name == provider_name.strip().lower(),
-            ProviderMapping.external_id == external_id.strip(),
+            ProviderMapping.provider_name == provider_name,
+            ProviderMapping.external_id == external_id,
         )
     )
     terminal = session.execute(stmt).scalars().first()
@@ -51,13 +71,9 @@ def find_terminal_by_external_id(
         return terminal
 
     # 2. Fallback: Busca pelo código oficial (IATA ou sigla)
-    clean_code = external_id.strip().upper()
+    clean_code = external_id.upper()
     stmt_code = select(Terminal).where(Terminal.official_code == clean_code)
-    terminal = session.execute(stmt_code).scalars().first()
-    if terminal:
-        return terminal
-
-    return None
+    return session.execute(stmt_code).scalars().first()
 
 
 NON_PERSISTABLE_PROVIDERS = {"trivio_interliner", "antt_projection"}
@@ -86,17 +102,25 @@ class QuotePipeline:
         cls,
         quote: StandardizedQuote,
         session: Session,
+        terminal_cache: Optional[TerminalCache] = None,
+        evaluate: bool = True,
     ) -> Tuple[StandardizedQuote, Optional[Terminal], Optional[Terminal]]:
-        """Resolve terminais canônicos, injeta custos reais de transfer e tempo porta a porta."""
+        """Resolve terminais canônicos, injeta custos reais de transfer e tempo porta a porta.
+
+        `terminal_cache` evita repetir as consultas de terminal dentro de um lote.
+        `evaluate=False` pula prós/contras quando quem chama reavalia depois da deduplicação.
+        """
         origin_term = find_terminal_by_external_id(
             session=session,
             provider_name=quote.provider_source,
             external_id=quote.origin_external_id,
+            cache=terminal_cache,
         )
         dest_term = find_terminal_by_external_id(
             session=session,
             provider_name=quote.provider_source,
             external_id=quote.destination_external_id,
+            cache=terminal_cache,
         )
 
         if origin_term:
@@ -134,7 +158,8 @@ class QuotePipeline:
         quote.route_metadata["checkin_buffer_minutes"] = checkin_buffer
 
         # Enriquece com avaliação qualitativa de prós, contras e contratempos
-        enrich_quote_with_evaluation(quote)
+        if evaluate:
+            enrich_quote_with_evaluation(quote)
 
         return quote, origin_term, dest_term
 
@@ -206,12 +231,13 @@ class QuotePipeline:
 
         # 1. Enriquecimento de Terminais Canônicos e Custos de Transfer
         enriched_quotes: List[StandardizedQuote] = []
-        terminal_cache: Dict[str, Tuple[Optional[Terminal], Optional[Terminal]]] = {}
+        terminals_by_signature: Dict[str, Tuple[Optional[Terminal], Optional[Terminal]]] = {}
+        terminal_cache: TerminalCache = {}
 
         for q in quotes:
-            enriched, orig_t, dest_t = cls.enrich_quote(q, session)
+            enriched, orig_t, dest_t = cls.enrich_quote(q, session, terminal_cache=terminal_cache)
             enriched_quotes.append(enriched)
-            terminal_cache[enriched.dedup_signature] = (orig_t, dest_t)
+            terminals_by_signature[enriched.dedup_signature] = (orig_t, dest_t)
 
         # 2. Deduplicação em memória (agrupando por assinatura canônica única)
         deduped_quotes = deduplicate_quotes(enriched_quotes, attach_sellers_info=True)
@@ -220,7 +246,7 @@ class QuotePipeline:
         saved_records: List[FareQuote] = []
 
         for quote in deduped_quotes:
-            orig_t, dest_t = terminal_cache.get(quote.dedup_signature, (None, None))
+            orig_t, dest_t = terminals_by_signature.get(quote.dedup_signature, (None, None))
             if not orig_t or not dest_t:
                 continue
 

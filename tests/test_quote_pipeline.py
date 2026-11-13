@@ -261,3 +261,31 @@ def test_enrich_quote_exposes_city_for_official_statistics(db_session):
     assert meta["origin_transfer_minutes"] == 15
     assert meta["destination_transfer_minutes"] == 20
     assert meta["checkin_buffer_minutes"] == 20
+
+
+def test_terminal_cache_queries_each_provider_id_once(db_session):
+    """Num lote, todas as cotações dividem os mesmos terminais: o banco é consultado uma vez por par."""
+    from sqlalchemy import event
+    from app.services.quote_pipeline import find_terminal_by_external_id
+
+    statements = []
+
+    def count(conn, cursor, statement, params, context, executemany):
+        statements.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", count)
+    cache = {}
+    try:
+        found = [
+            find_terminal_by_external_id(db_session, provider, "sao-paulo-tiete-sp ", cache=cache)
+            for provider in ("clickbus", "ClickBus ", "clickbus")
+        ]
+        missing = [find_terminal_by_external_id(db_session, "clickbus", "nao-existe", cache=cache) for _ in range(3)]
+    finally:
+        event.remove(engine, "before_cursor_execute", count)
+
+    assert all(t is not None and t.id == found[0].id for t in found)
+    assert missing == [None, None, None]
+    # 1 consulta para o terminal achado + 2 (mapping e código oficial) para o que não existe
+    assert len(statements) == 3

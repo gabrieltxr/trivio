@@ -1,6 +1,7 @@
 """Testes do AirQuoteService: cache de consultas, orçamento mensal e coalescência."""
 
 import asyncio
+import time
 from datetime import datetime, timedelta
 
 import pytest
@@ -67,7 +68,8 @@ class Clock:
 
 @pytest.fixture
 def session_factory(tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'air.db'}")
+    # Como no app (app/database.py): o serviço consulta o banco em threads (asyncio.to_thread)
+    engine = create_engine(f"sqlite:///{tmp_path / 'air.db'}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)
 
@@ -306,6 +308,46 @@ async def test_concurrent_identical_searches_share_one_request(session_factory):
     assert all(len(r) == 1 for r in results)
     tiers = sorted(r[0].route_metadata["collector_stats"]["tier"] for r in results)
     assert tiers == ["coalesced"] * 4 + ["live"]
+
+
+@pytest.mark.asyncio
+async def test_search_arriving_while_the_first_finishes_does_not_pay_again(session_factory):
+    """A leitura do cache roda numa thread: a busca registrada em _inflight precisa cobrir também
+    essa leitura, senão uma busca idêntica que lê o cache antes de a primeira gravar, e volta
+    depois que ela terminou, não acha cache nem busca em andamento e paga outra request."""
+    collector = FakeCollector(delay=0.05)
+    service = _service(session_factory, collector)
+    lookup = service._lookup_or_check_budget
+    calls = []
+
+    def lookup_where_the_second_returns_late(*args, **kwargs):
+        calls.append(args)
+        result = lookup(*args, **kwargs)
+        if len(calls) == 2:
+            time.sleep(0.15)   # só volta ao loop depois que a primeira gravou e saiu de _inflight
+        return result
+
+    service._lookup_or_check_budget = lookup_where_the_second_returns_late
+    first = asyncio.create_task(service.get_quotes("CGH", "SDU", "2026-12-01"))
+    await asyncio.sleep(0.01)
+    second = asyncio.create_task(service.get_quotes("CGH", "SDU", "2026-12-01"))
+    results = await asyncio.gather(first, second)
+
+    assert collector.calls == 1
+    assert [r[0].route_metadata["collector_stats"]["tier"] for r in results] == ["live", "coalesced"]
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_is_shared_with_concurrent_identical_searches(session_factory):
+    collector = FakeCollector()
+    service = _service(session_factory, collector)
+    await service.get_quotes("CGH", "SDU", "2026-12-01")
+
+    results = await asyncio.gather(*[service.get_quotes("CGH", "SDU", "2026-12-01") for _ in range(3)])
+
+    assert collector.calls == 1
+    tiers = sorted(r[0].route_metadata["collector_stats"]["tier"] for r in results)
+    assert tiers == ["cache", "coalesced", "coalesced"]
 
 
 @pytest.mark.asyncio

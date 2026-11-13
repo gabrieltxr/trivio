@@ -49,7 +49,7 @@ from app.collectors.antt import (
     detect_monitriip_schema,
 )
 from app.analyzers.price_thermometer import MIN_OFFICIAL_MONTHS
-from app.database import SessionLocal, engine, Base
+from app.database import SessionLocal, analyze_tables, engine, ensure_schema
 from app.models import ModalType, RouteMonthlyFare
 
 console = Console()
@@ -66,7 +66,7 @@ def persist_monthly(
     Substituir em vez de atualizar linha a linha garante que reimportar o mesmo mês
     não duplica nada, e que uma correção da fonte chega inteira.
     """
-    Base.metadata.create_all(engine)
+    ensure_schema(engine)
     with SessionLocal() as session:
         session.query(RouteMonthlyFare).filter(
             RouteMonthlyFare.emission_period == emission_period,
@@ -93,6 +93,8 @@ def persist_monthly(
             for agg in aggregates
         )
         session.commit()
+    # Carga grande: estatísticas novas para o planejador escolher o índice de route_key
+    analyze_tables(RouteMonthlyFare.__tablename__)
     return len(aggregates)
 
 

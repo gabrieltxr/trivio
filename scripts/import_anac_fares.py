@@ -46,7 +46,7 @@ from app.collectors.anac import (
     detect_anac_schema,
     to_iata,
 )
-from app.database import SessionLocal, engine, ensure_schema
+from app.database import SessionLocal, analyze_tables, engine, ensure_schema
 from app.models import ModalType, RouteMonthlyFare
 
 console = Console()
@@ -92,6 +92,8 @@ def persist_air_monthly(aggregates: List[AirRouteMonthlyAggregate]) -> int:
             for agg in aggregates
         )
         session.commit()
+    # Carga grande: estatísticas novas para o planejador escolher o índice de route_key
+    analyze_tables(RouteMonthlyFare.__tablename__)
     return len(aggregates)
 
 
