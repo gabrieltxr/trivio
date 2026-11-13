@@ -257,3 +257,47 @@ def test_antt_bus_estimates_have_no_price_thermometer(mock_air, client, antt_ser
 
     assert road
     assert all("price_thermometer" not in q["route_metadata"] for q in road)
+
+
+@pytest.mark.asyncio
+async def test_search_returns_its_connection_to_the_pool_while_waiting_for_flights():
+    """A busca não segura conexão enquanto espera o aéreo. Segurá-la enquanto cada thread de
+    _run_db_work pede outra esgotava o pool (5+10) e travava tudo com ~16 buscas simultâneas."""
+    import asyncio
+
+    from app.api import websocket as ws
+    from app.database import engine
+
+    in_use_while_waiting = []
+
+    class FakeSocket:
+        client = ("127.0.0.1", 1)
+
+        def __init__(self):
+            self.events = []
+
+        async def send_json(self, data):
+            self.events.append(data)
+
+    socket = FakeSocket()
+
+    class SlowAir:
+        provider_name = "ignav"
+        modal = "AIR"
+
+        async def get_quotes(self, origin, destination, travel_date):
+            # espera o lote de ônibus sair (a thread dele já devolveu a conexão)
+            while not any(e.get("provider") == "antt_projection" for e in socket.events):
+                await asyncio.sleep(0.005)
+            in_use_while_waiting.append(engine.pool.checkedout())
+            return []
+
+    original = ws.get_air_quote_service
+    ws.get_air_quote_service = lambda: SlowAir()
+    try:
+        await ws.orchestrate_search(socket, {"origin": "SAO", "destination": "RIO", "date": "2026-11-20"})
+    finally:
+        ws.get_air_quote_service = original
+
+    assert socket.events[-1]["event"] == "SEARCH_COMPLETED"
+    assert in_use_while_waiting == [0]

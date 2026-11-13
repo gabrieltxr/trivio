@@ -244,14 +244,10 @@ class AirQuoteService:
         query_key = build_query_key(self.provider_name, "search", params)
         started = time.perf_counter()
 
-        hit = await asyncio.to_thread(self._lookup_or_check_budget, "search", query_key)
-        if hit is not None:
-            payload, age = hit
-            data = list(payload or [])
-            logger.info(f"[{self.provider_name}] cache {origin}->{destination} {travel_date}: {len(data)} voos ({age}s)")
-            return await asyncio.to_thread(self._materialize, data, "cache", started, age)
-
-        # Sem await entre a checagem e o registro do future: a coalescência continua atômica no loop.
+        # A checagem e o registro do future acontecem no loop, sem await no meio, ANTES de
+        # consultar o cache: quem chegar enquanto esta busca lê o cache, consulta o Ignav ou
+        # grava o resultado espera por ela. Se o registro viesse depois da leitura do cache
+        # (que roda numa thread), uma busca idêntica poderia escapar e pagar outra request.
         inflight = self._inflight.get(query_key)
         if inflight is not None:
             data = await asyncio.shield(inflight)
@@ -259,8 +255,15 @@ class AirQuoteService:
 
         future: "asyncio.Future[List[Dict[str, Any]]]" = asyncio.get_running_loop().create_future()
         self._inflight[query_key] = future
+        tier, age = "live", None
         try:
-            data = await self._fetch_and_record(origin, destination, travel_date, query_key)
+            hit = await asyncio.to_thread(self._lookup_or_check_budget, "search", query_key)
+            if hit is not None:
+                payload, age = hit
+                tier, data = "cache", list(payload or [])
+                logger.info(f"[{self.provider_name}] cache {origin}->{destination} {travel_date}: {len(data)} voos ({age}s)")
+            else:
+                data = await self._fetch_and_record(origin, destination, travel_date, query_key)
             future.set_result(data)
         except BaseException as exc:
             future.set_exception(exc)
@@ -268,7 +271,7 @@ class AirQuoteService:
             raise
         finally:
             self._inflight.pop(query_key, None)
-        return await asyncio.to_thread(self._materialize, data, "live", started)
+        return await asyncio.to_thread(self._materialize, data, tier, started, age)
 
     async def _fetch_and_record(
         self, origin: str, destination: str, travel_date: str, query_key: str

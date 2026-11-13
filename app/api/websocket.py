@@ -731,6 +731,13 @@ async def _run_search(
             )
         ))
 
+    # Fim do uso da sessão da busca: devolve a conexão ao pool antes de esperar o Ignav.
+    # Daqui em diante o banco só é usado por _run_db_work (Session própria por thread), e dos
+    # hubs/terminais só se leem colunas já carregadas (id, name, state, official_code); nada
+    # foi commitado, então nada expirou. Segurar esta conexão enquanto cada thread pede outra
+    # esgotava o pool (5+10) com ~8 buscas simultâneas e travava tudo com 16.
+    db.close()
+
     try:
         # 2. Ônibus pela ANTT: sai na hora, enquanto os voos ainda estão sendo consultados
         if road_available:
