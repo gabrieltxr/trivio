@@ -21,7 +21,7 @@ import hashlib
 import json
 import logging
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -209,6 +209,31 @@ class AirQuoteService:
         session.add(ProviderQuery(provider=self.provider_name, requested_at=self._now(), **values))
         session.commit()
 
+    # As consultas abaixo são SQLAlchemy síncrono: rodam numa thread (asyncio.to_thread),
+    # cada uma com a sua Session, para não travar o event loop da busca.
+
+    def _lookup_or_check_budget(
+        self, kind: str, query_key: str, require_payload: bool = False
+    ) -> Optional[Tuple[Any, int]]:
+        """Resposta em cache como (payload, idade em s); sem cache, confere o saldo e devolve None.
+
+        Levanta AirProviderUnavailableError quando não há cache e a consulta ao vivo não pode sair.
+        """
+        with self.session_factory() as session:
+            cached = self._cached(session, kind, query_key)
+            if cached is not None and (cached.payload or not require_payload):
+                age = round((self._now() - cached.requested_at).total_seconds())
+                return cached.payload, age
+            self._ensure_available(session)
+            return None
+
+    def _record_in_new_session(self, **values: Any) -> None:
+        with self.session_factory() as session:
+            self._record(session, **values)
+
+    async def _record_async(self, **values: Any) -> None:
+        await asyncio.to_thread(self._record_in_new_session, **values)
+
     # ------------------------------------------------------------------ busca
 
     async def get_quotes(self, origin: str, destination: str, travel_date: str) -> List[StandardizedQuote]:
@@ -219,19 +244,18 @@ class AirQuoteService:
         query_key = build_query_key(self.provider_name, "search", params)
         started = time.perf_counter()
 
-        with self.session_factory() as session:
-            cached = self._cached(session, "search", query_key)
-            if cached is not None:
-                data = list(cached.payload or [])
-                age = round((self._now() - cached.requested_at).total_seconds())
-                logger.info(f"[{self.provider_name}] cache {origin}->{destination} {travel_date}: {len(data)} voos ({age}s)")
-                return self._materialize(data, tier="cache", started=started, cache_age_seconds=age)
-            self._ensure_available(session)
+        hit = await asyncio.to_thread(self._lookup_or_check_budget, "search", query_key)
+        if hit is not None:
+            payload, age = hit
+            data = list(payload or [])
+            logger.info(f"[{self.provider_name}] cache {origin}->{destination} {travel_date}: {len(data)} voos ({age}s)")
+            return await asyncio.to_thread(self._materialize, data, "cache", started, age)
 
+        # Sem await entre a checagem e o registro do future: a coalescência continua atômica no loop.
         inflight = self._inflight.get(query_key)
         if inflight is not None:
             data = await asyncio.shield(inflight)
-            return self._materialize(data, tier="coalesced", started=started)
+            return await asyncio.to_thread(self._materialize, data, "coalesced", started)
 
         future: "asyncio.Future[List[Dict[str, Any]]]" = asyncio.get_running_loop().create_future()
         self._inflight[query_key] = future
@@ -244,7 +268,7 @@ class AirQuoteService:
             raise
         finally:
             self._inflight.pop(query_key, None)
-        return self._materialize(data, tier="live", started=started)
+        return await asyncio.to_thread(self._materialize, data, "live", started)
 
     async def _fetch_and_record(
         self, origin: str, destination: str, travel_date: str, query_key: str
@@ -256,29 +280,26 @@ class AirQuoteService:
             quotes = await self.collector.fetch_quotes(origin, destination, travel_date)
         except IgnavRequestError as exc:
             elapsed = round((time.perf_counter() - started) * 1000, 1)
-            with self.session_factory() as session:
-                if exc.code in EMPTY_RESULT_CODES:
-                    self._record(session, **base, status="empty", billed=0, quotes_count=0, elapsed_ms=elapsed,
-                                 error=str(exc)[:500], payload=[],
-                                 expires_at=self._now() + timedelta(seconds=self._ttl_seconds(travel_date)))
-                    return []
-                self._record(session, **base, status="error", billed=0, elapsed_ms=elapsed, error=str(exc)[:500])
+            if exc.code in EMPTY_RESULT_CODES:
+                await self._record_async(**base, status="empty", billed=0, quotes_count=0, elapsed_ms=elapsed,
+                                         error=str(exc)[:500], payload=[],
+                                         expires_at=self._now() + timedelta(seconds=self._ttl_seconds(travel_date)))
+                return []
+            await self._record_async(**base, status="error", billed=0, elapsed_ms=elapsed, error=str(exc)[:500])
             raise
         except Exception as exc:
             elapsed = round((time.perf_counter() - started) * 1000, 1)
-            with self.session_factory() as session:
-                self._record(session, **base, status="error", billed=0, elapsed_ms=elapsed,
-                             error=f"{type(exc).__name__}: {exc}"[:500])
+            await self._record_async(**base, status="error", billed=0, elapsed_ms=elapsed,
+                                     error=f"{type(exc).__name__}: {exc}"[:500])
             raise
 
         elapsed = round((time.perf_counter() - started) * 1000, 1)
         data = [quote.to_dict() for quote in quotes]
-        with self.session_factory() as session:
-            self._record(
-                session, **base,
-                status="ok" if data else "empty", billed=1, quotes_count=len(data), elapsed_ms=elapsed,
-                payload=data, expires_at=self._now() + timedelta(seconds=self._ttl_seconds(travel_date)),
-            )
+        await self._record_async(
+            **base,
+            status="ok" if data else "empty", billed=1, quotes_count=len(data), elapsed_ms=elapsed,
+            payload=data, expires_at=self._now() + timedelta(seconds=self._ttl_seconds(travel_date)),
+        )
         logger.info(f"[{self.provider_name}] ao vivo {origin}->{destination} {travel_date}: {len(data)} voos em {elapsed}ms")
         return data
 
@@ -302,11 +323,11 @@ class AirQuoteService:
         """URL de compra do voo escolhido. Custa uma request; fica em cache por 30 min."""
         params = {"ignav_id": ignav_id}
         query_key = build_query_key(self.provider_name, "booking_link", params)
-        with self.session_factory() as session:
-            cached = self._cached(session, "booking_link", query_key)
-            if cached is not None and cached.payload:
-                return cached.payload["url"]
-            self._ensure_available(session)
+        hit = await asyncio.to_thread(
+            self._lookup_or_check_budget, "booking_link", query_key, require_payload=True,
+        )
+        if hit is not None:
+            return hit[0]["url"]
 
         started = time.perf_counter()
         base = dict(kind="booking_link", query_key=query_key, origin=origin.upper(),
@@ -316,20 +337,18 @@ class AirQuoteService:
                 ignav_id, origin, destination, departure_date, carrier_code, flight_number,
             )
         except Exception as exc:
-            with self.session_factory() as session:
-                self._record(session, **base, status="error", billed=0,
-                             elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
-                             error=f"{type(exc).__name__}: {exc}"[:500])
+            await self._record_async(**base, status="error", billed=0,
+                                     elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+                                     error=f"{type(exc).__name__}: {exc}"[:500])
             raise
 
         url = pick_booking_url(response)
-        with self.session_factory() as session:
-            self._record(
-                session, **base, status="ok" if url else "empty", billed=1, quotes_count=1 if url else 0,
-                elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
-                payload={"url": url} if url else None,
-                expires_at=self._now() + timedelta(seconds=BOOKING_LINK_TTL_SECONDS),
-            )
+        await self._record_async(
+            **base, status="ok" if url else "empty", billed=1, quotes_count=1 if url else 0,
+            elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+            payload={"url": url} if url else None,
+            expires_at=self._now() + timedelta(seconds=BOOKING_LINK_TTL_SECONDS),
+        )
         if not url:
             raise CollectorError("O provedor não devolveu link de compra para este voo.")
         return url

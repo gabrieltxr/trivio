@@ -67,7 +67,8 @@ class Clock:
 
 @pytest.fixture
 def session_factory(tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'air.db'}")
+    # Como no app (app/database.py): o serviço consulta o banco em threads (asyncio.to_thread)
+    engine = create_engine(f"sqlite:///{tmp_path / 'air.db'}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)
 
