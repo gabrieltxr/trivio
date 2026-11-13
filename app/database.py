@@ -68,8 +68,17 @@ _ADDED_COLUMNS = {
 }
 
 
+# Índices que já existiram e foram retirados dos modelos. Índice de coluna com só dois valores
+# (modal) atrapalha: sem estatísticas, o SQLite o escolhia no lugar do índice de route_key
+# e a busca de uma rota varria ~300 mil linhas (56 ms em vez de 0,15 ms por consulta).
+_DROPPED_INDEXES = (
+    "ix_route_monthly_fares_modal",
+    "ix_fare_quotes_modal",
+)
+
+
 def ensure_schema(bind=None) -> None:
-    """Cria as tabelas que faltam e acrescenta colunas novas às existentes.
+    """Cria as tabelas que faltam, acrescenta colunas novas e remove índices aposentados.
 
     Idempotente: pode rodar a cada inicialização. Só acrescenta colunas anuláveis.
     """
@@ -86,3 +95,17 @@ def ensure_schema(bind=None) -> None:
             for name, sql_type in columns.items():
                 if name not in existing:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))
+        for index_name in _DROPPED_INDEXES:
+            conn.execute(text(f"DROP INDEX IF EXISTS {index_name}"))
+
+
+def analyze_tables(*tables: str, bind=None) -> None:
+    """Atualiza as estatísticas do otimizador depois de uma carga grande.
+
+    Com as estatísticas (sqlite_stat1 no SQLite), o planejador escolhe o índice mais
+    seletivo em vez de adivinhar. Funciona igual no SQLite e no PostgreSQL.
+    """
+    bind = bind or engine
+    with bind.begin() as conn:
+        for table in tables:
+            conn.execute(text(f"ANALYZE {table}"))
