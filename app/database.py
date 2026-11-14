@@ -5,7 +5,9 @@ PostgreSQL in production with connection pooling and foreign key enforcement.
 """
 
 from typing import Generator
+import warnings
 from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.schema import CreateIndex
 from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
 from app.config import settings
 
@@ -83,8 +85,65 @@ _DROPPED_INDEXES = (
 )
 
 
+# Restrições únicas que foram trocadas por outra mais completa: (tabela, nome antigo).
+# uq_bus_schedule não tinha o feed, então uma partida da ANTT e a mesma partida de um feed
+# GTFS no mesmo período colidiam e o import do GTFS falhava (substituída por uq_bus_schedule_feed).
+_REPLACED_UNIQUE_CONSTRAINTS = (
+    ("bus_schedules", "uq_bus_schedule"),
+)
+
+
+def _rebuild_sqlite_table(conn, table_name: str) -> None:
+    """Recria uma tabela SQLite pelo modelo atual, preservando as linhas.
+
+    O SQLite não remove restrição de tabela com ALTER TABLE: a saída documentada é criar a
+    tabela nova, copiar os dados e apagar a antiga. Índices da tabela antiga são apagados
+    antes, para os nomes ficarem livres para a nova.
+    """
+    table = Base.metadata.tables[table_name]
+    old_name = f"_old_{table_name}"
+    for index in inspect(conn).get_indexes(table_name):
+        conn.execute(text(f'DROP INDEX IF EXISTS "{index["name"]}"'))
+    conn.execute(text(f'ALTER TABLE "{table_name}" RENAME TO "{old_name}"'))
+    table.create(conn)
+    old_columns = {col["name"] for col in inspect(conn).get_columns(old_name)}
+    columns = ", ".join(f'"{c.name}"' for c in table.columns if c.name in old_columns)
+    conn.execute(text(f'INSERT INTO "{table_name}" ({columns}) SELECT {columns} FROM "{old_name}"'))
+    conn.execute(text(f'DROP TABLE "{old_name}"'))
+
+
+def _replace_unique_constraints(conn) -> None:
+    # A reflexão avisa a cada chamada que pulou o índice de expressão (uq_bus_schedule_feed):
+    # é esperado, e o aviso apareceria a cada inicialização da API.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Skipped unsupported reflection of expression-based index")
+        _replace_unique_constraints_inner(conn)
+
+
+def _replace_unique_constraints_inner(conn) -> None:
+    inspector = inspect(conn)
+    for table_name, constraint in _REPLACED_UNIQUE_CONSTRAINTS:
+        if not inspector.has_table(table_name):
+            continue
+        names = {uc.get("name") for uc in inspector.get_unique_constraints(table_name)}
+        if constraint not in names:
+            continue
+        if conn.dialect.name == "sqlite":
+            _rebuild_sqlite_table(conn, table_name)
+        else:
+            conn.execute(text(f'ALTER TABLE "{table_name}" DROP CONSTRAINT "{constraint}"'))
+        inspector = inspect(conn)
+        # A unicidade nova é um índice: create_all() só cria índice junto da tabela, então numa
+        # tabela que já existia (PostgreSQL) ele é criado aqui. IF NOT EXISTS por nome, porque a
+        # reflexão do SQLAlchemy não enxerga índice de expressão; no SQLite recriado já existe.
+        for index in Base.metadata.tables[table_name].indexes:
+            if index.unique:
+                conn.execute(CreateIndex(index, if_not_exists=True))
+
+
 def ensure_schema(bind=None) -> None:
-    """Cria as tabelas que faltam, acrescenta colunas novas e remove índices aposentados.
+    """Cria as tabelas que faltam, acrescenta colunas novas, troca restrições únicas
+    antigas e remove índices aposentados.
 
     Idempotente: pode rodar a cada inicialização. Só acrescenta colunas anuláveis.
     """
@@ -101,6 +160,7 @@ def ensure_schema(bind=None) -> None:
             for name, sql_type in columns.items():
                 if name not in existing:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))
+        _replace_unique_constraints(conn)
         for index_name in _DROPPED_INDEXES:
             conn.execute(text(f"DROP INDEX IF EXISTS {index_name}"))
 

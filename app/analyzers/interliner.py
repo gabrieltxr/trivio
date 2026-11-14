@@ -1,10 +1,9 @@
-"""Motor de Virtual Interlining Baseado em Grafos (NetworkX).
+"""Motor de Virtual Interlining: ônibus até um hub + voo saindo do hub.
 
 Responsável por:
 1. Construir rotas conectadas híbridas (ex: Ônibus Interior -> Hub -> Voo Capital).
-2. Modelar o problema como um MultiDiGraph direcionado no NetworkX, onde:
-   - Nós representam terminais de origem, hub (rodoviária e aeroporto) e destino.
-   - Arestas representam viagens físicas (cotações) e conexões terrestres de transfer.
+2. Combinar as pernas pelo terminal do hub: cada chegada da perna 1 com cada partida da
+   perna 2 ligada a ela por um transfer terrestre (mesmo terminal ou troca de terminal).
 3. Validar janelas mínimas e máximas de conexão (MCT Intermodal):
    - Mínimo de 120 min para troca de modal (absorve atrasos rodoviários e antecedência no aeroporto).
    - Classificação de risco: SAFE (>= 180 min), WARNING (120-179 min), CRITICAL (< 120 min - rejeitada).
@@ -17,7 +16,6 @@ import logging
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from geopy.distance import geodesic
-import networkx as nx
 
 from app.analyzers.trivio_scorer import calculate_score_breakdown
 from app.collectors.base import StandardizedQuote
@@ -191,14 +189,6 @@ def _destination_egress_minutes(quote: Any) -> int:
     return 0
 
 
-def _arrival_node(terminal_id: str) -> str:
-    return f"ARR::{terminal_id}"
-
-
-def _departure_node(terminal_id: str) -> str:
-    return f"DEP::{terminal_id}"
-
-
 def calculate_terminal_transfer(
     from_term: Optional[Terminal],
     to_term: Optional[Terminal],
@@ -268,228 +258,166 @@ def calculate_terminal_transfer(
 
 
 # ==============================================================================
-# 4. Motor de Grafo Virtual Interlining (NetworkX)
+# 4. Combinação das pernas (ônibus até o hub + voo saindo do hub)
 # ==============================================================================
 
-class VirtualInterliningGraph:
-    """Grafo direcionado ponderado para composição de rotas intermodais."""
+def find_interline_routes(
+    origin_id: str,
+    destination_id: str,
+    leg1_quotes: Sequence[Any],
+    leg2_quotes: Sequence[Any],
+    transfer_map: Dict[Tuple[str, str], TransferLeg],
+    hub_name: str = "Hub Intermodal",
+    hub_id: Optional[int] = None,
+    min_connection_minutes: int = MIN_INTERMODAL_CONNECTION_MINUTES,
+    max_connection_minutes: int = MAX_INTERMODAL_CONNECTION_MINUTES,
+    hourly_time_value: Optional[float] = None,
+    max_results: int = 10,
+) -> List[VirtualInterlineRoute]:
+    """Combina cada perna 1 com as pernas 2 do terminal ligado a ela por transfer, valida a
+    conexão e devolve as rotas ordenadas por Trivio Score.
 
-    def __init__(self):
-        self.graph = nx.MultiDiGraph()
+    As pernas são agrupadas pelo terminal do hub (chegada da perna 1, partida da perna 2) e
+    cada par de terminais com transfer é percorrido na ordem em que as cotações chegaram.
+    Antes isso era um MultiDiGraph do NetworkX, usado só como agrupamento (nenhum algoritmo
+    de grafo era chamado); a ordem de percurso e as regras são as mesmas.
+    """
+    leg1_by_arrival: Dict[str, List[Any]] = {}
+    for q1 in leg1_quotes:
+        leg1_by_arrival.setdefault(_leg1_hub_id(q1), []).append(q1)
+    leg2_by_departure: Dict[str, List[Any]] = {}
+    for q2 in leg2_quotes:
+        leg2_by_departure.setdefault(_leg2_hub_id(q2), []).append(q2)
 
-    def build_graph(
-        self,
-        origin_id: str,
-        destination_id: str,
-        leg1_quotes: Sequence[Any],
-        leg2_quotes: Sequence[Any],
-        transfer_map: Dict[Tuple[str, str], TransferLeg],
-    ) -> None:
-        """Monta os nós e arestas no NetworkX a partir das cotações coletadas."""
-        self.graph.clear()
+    valid_routes: List[VirtualInterlineRoute] = []
 
-        # Nós fundamentais
-        self.graph.add_node(origin_id, type="ORIGIN")
-        self.graph.add_node(destination_id, type="DESTINATION")
+    for arr_id, leg1_group in leg1_by_arrival.items():
+        for dep_id, leg2_group in leg2_by_departure.items():
+            transfer = transfer_map.get((arr_id, dep_id))
+            if transfer is None:
+                continue
 
-        # Nós de hub recebem prefixos distintos de chegada/partida: quando a perna 1 chega
-        # ao mesmo terminal de onde parte a perna 2 (ou a hubs com o mesmo identificador),
-        # um nó único teria seu atributo "type" sobrescrito e a rota seria descartada.
-        # Arestas da Perna 1 (Origem -> Hub_Arrival)
-        for idx, q1 in enumerate(leg1_quotes):
-            hub_arr_node = _arrival_node(_leg1_hub_id(q1))
-            self.graph.add_node(hub_arr_node, type="HUB_ARRIVAL")
-            self.graph.add_edge(
-                origin_id,
-                hub_arr_node,
-                key=f"leg1_{idx}",
-                quote=q1,
-                edge_type="LEG1",
-            )
+            for q1 in leg1_group:
+                arr1 = _get_val(q1, "arrival_time")
+                dep1 = _get_val(q1, "departure_time")
 
-        # Arestas da Perna 2 (Hub_Departure -> Destino)
-        for idx, q2 in enumerate(leg2_quotes):
-            hub_dep_node = _departure_node(_leg2_hub_id(q2))
-            self.graph.add_node(hub_dep_node, type="HUB_DEPARTURE")
-            self.graph.add_edge(
-                hub_dep_node,
-                destination_id,
-                key=f"leg2_{idx}",
-                quote=q2,
-                edge_type="LEG2",
-            )
+                for q2 in leg2_group:
+                    dep2 = _get_val(q2, "departure_time")
+                    arr2 = _get_val(q2, "arrival_time")
 
-        # Arestas de Transfer entre Hub_Arrival e Hub_Departure
-        for (arr_id, dep_id), transfer in transfer_map.items():
-            arr_node = _arrival_node(arr_id)
-            dep_node = _departure_node(dep_id)
-            if self.graph.has_node(arr_node) and self.graph.has_node(dep_node):
-                self.graph.add_edge(
-                    arr_node,
-                    dep_node,
-                    key=f"transfer_{arr_node}_{dep_node}",
-                    transfer=transfer,
-                    edge_type="TRANSFER",
-                )
+                    if not arr1 or not dep2:
+                        continue
 
-    def find_interline_routes(
-        self,
-        origin_id: str,
-        destination_id: str,
-        hub_name: str = "Hub Intermodal",
-        hub_id: Optional[int] = None,
-        min_connection_minutes: int = MIN_INTERMODAL_CONNECTION_MINUTES,
-        max_connection_minutes: int = MAX_INTERMODAL_CONNECTION_MINUTES,
-        hourly_time_value: Optional[float] = None,
-        max_results: int = 10,
-    ) -> List[VirtualInterlineRoute]:
-        """Percorre o grafo, valida conexões temporais e retorna rotas ordenadas por Trivio Score."""
-        valid_routes: List[VirtualInterlineRoute] = []
+                    # Validação de Cronologia e Janela de Conexão
+                    conn_seconds = (dep2 - arr1).total_seconds()
+                    if conn_seconds <= 0:
+                        continue  # O segundo trecho parte antes de o primeiro chegar
 
-        if not self.graph.has_node(origin_id) or not self.graph.has_node(destination_id):
-            return []
+                    conn_minutes = int(conn_seconds // 60)
+                    if conn_minutes < min_connection_minutes or conn_minutes > max_connection_minutes:
+                        continue
 
-        # Localiza todos os nós intermediários de chegada e partida
-        hub_arrivals = [n for n in self.graph.nodes if self.graph.nodes[n].get("type") == "HUB_ARRIVAL"]
-        hub_departures = [n for n in self.graph.nodes if self.graph.nodes[n].get("type") == "HUB_DEPARTURE"]
+                    # Margem de segurança após o deslocamento de transfer
+                    buffer_min = conn_minutes - transfer.transfer_duration_minutes
+                    if buffer_min < 45:  # Menos de 45 min livres é inviável para check-in/embarque
+                        continue
 
-        for arr_node in hub_arrivals:
-            for dep_node in hub_departures:
-                # Verifica se há aresta de transfer entre eles
-                if not self.graph.has_edge(arr_node, dep_node):
-                    continue
+                    # Classificação de Risco
+                    if conn_minutes < RECOMMENDED_SAFE_CONNECTION_MINUTES:
+                        risk_level = "WARNING"
+                    else:
+                        risk_level = "SAFE"
 
-                transfer_data = self.graph.get_edge_data(arr_node, dep_node)
-                transfer_edge = next(iter(transfer_data.values()))
-                transfer: TransferLeg = transfer_edge["transfer"]
+                    # Métricas Financeiras e Temporais
+                    p1 = float(_get_val(q1, "total_effective_price", 0.0) or _get_val(q1, "base_price", 0.0))
+                    p2 = float(_get_val(q2, "total_effective_price", 0.0) or _get_val(q2, "base_price", 0.0))
+                    total_price = round(p1 + transfer.transfer_cost_brl + p2, 2)
 
-                # Avalia todas as combinações de Perna 1 e Perna 2
-                leg1_edges = self.graph.get_edge_data(origin_id, arr_node) or {}
-                leg2_edges = self.graph.get_edge_data(dep_node, destination_id) or {}
+                    total_duration_minutes = int((arr2 - dep1).total_seconds() // 60) if dep1 and arr2 else 0
+                    # Porta a porta = acesso até o terminal de origem (transfer urbano + antecedência)
+                    # + tempo corrido da partida da perna 1 à chegada da perna 2 (já inclui a espera
+                    # e o transfer entre terminais no hub) + transfer urbano a partir do destino final.
+                    total_d2d = (
+                        _origin_access_minutes(q1)
+                        + total_duration_minutes
+                        + _destination_egress_minutes(q2)
+                    )
 
-                for e1 in leg1_edges.values():
-                    q1 = e1["quote"]
-                    arr1 = _get_val(q1, "arrival_time")
-                    dep1 = _get_val(q1, "departure_time")
+                    # Construção de Metadados Ricos
+                    metadata: Dict[str, Any] = {
+                        "is_virtual_interline": True,
+                        "intermodal_hub": hub_name,
+                        "transfer_details": transfer.to_dict(),
+                        "connection_window_minutes": conn_minutes,
+                        "buffer_minutes": buffer_min,
+                        "risk_level": risk_level,
+                        "pros": [
+                            f"Integração Intermodal ({_get_val(q1, 'modal')}+{_get_val(q2, 'modal')}): "
+                            f"conecta interior ao destino sem depender de voo regional inflacionado."
+                        ],
+                        "cons": [
+                            f"Requer troca de terminal em {hub_name} ({transfer.from_terminal_name} -> "
+                            f"{transfer.to_terminal_name}, ~{transfer.transfer_duration_minutes} min)."
+                        ],
+                        "potential_setbacks": [
+                            "Conexão independente (bilhetes avulsos): atrasos na primeira perna "
+                            "não são cobertos pela companhia aérea da segunda perna."
+                        ],
+                    }
 
-                    for e2 in leg2_edges.values():
-                        q2 = e2["quote"]
-                        dep2 = _get_val(q2, "departure_time")
-                        arr2 = _get_val(q2, "arrival_time")
-
-                        if not arr1 or not dep2:
-                            continue
-
-                        # Validação de Cronologia e Janela de Conexão
-                        conn_seconds = (dep2 - arr1).total_seconds()
-                        if conn_seconds <= 0:
-                            continue  # O segundo trecho parte antes de o primeiro chegar
-
-                        conn_minutes = int(conn_seconds // 60)
-                        if conn_minutes < min_connection_minutes or conn_minutes > max_connection_minutes:
-                            continue
-
-                        # Margem de segurança após o deslocamento de transfer
-                        buffer_min = conn_minutes - transfer.transfer_duration_minutes
-                        if buffer_min < 45:  # Menos de 45 min livres é inviável para check-in/embarque
-                            continue
-
-                        # Classificação de Risco
-                        if conn_minutes < RECOMMENDED_SAFE_CONNECTION_MINUTES:
-                            risk_level = "WARNING"
-                        else:
-                            risk_level = "SAFE"
-
-                        # Métricas Financeiras e Temporais
-                        p1 = float(_get_val(q1, "total_effective_price", 0.0) or _get_val(q1, "base_price", 0.0))
-                        p2 = float(_get_val(q2, "total_effective_price", 0.0) or _get_val(q2, "base_price", 0.0))
-                        total_price = round(p1 + transfer.transfer_cost_brl + p2, 2)
-
-                        total_duration_minutes = int((arr2 - dep1).total_seconds() // 60) if dep1 and arr2 else 0
-                        # Porta a porta = acesso até o terminal de origem (transfer urbano + antecedência)
-                        # + tempo corrido da partida da perna 1 à chegada da perna 2 (já inclui a espera
-                        # e o transfer entre terminais no hub) + transfer urbano a partir do destino final.
-                        total_d2d = (
-                            _origin_access_minutes(q1)
-                            + total_duration_minutes
-                            + _destination_egress_minutes(q2)
+                    if risk_level == "WARNING":
+                        metadata["potential_setbacks"].append(
+                            f"Janela de conexão de atenção ({conn_minutes // 60}h{conn_minutes % 60:02d}m): "
+                            f"restam apenas {buffer_min} min livres após o transfer em caso de trânsito na rodovia."
+                        )
+                    else:
+                        metadata["pros"].append(
+                            f"Janela de conexão segura ({conn_minutes // 60}h{conn_minutes % 60:02d}m) "
+                            f"com {buffer_min} min livres após transfer."
                         )
 
-                        # Construção de Metadados Ricos
-                        metadata: Dict[str, Any] = {
-                            "is_virtual_interline": True,
-                            "intermodal_hub": hub_name,
-                            "transfer_details": transfer.to_dict(),
-                            "connection_window_minutes": conn_minutes,
-                            "buffer_minutes": buffer_min,
-                            "risk_level": risk_level,
-                            "pros": [
-                                f"Integração Intermodal ({_get_val(q1, 'modal')}+{_get_val(q2, 'modal')}): "
-                                f"conecta interior ao destino sem depender de voo regional inflacionado."
-                            ],
-                            "cons": [
-                                f"Requer troca de terminal em {hub_name} ({transfer.from_terminal_name} -> "
-                                f"{transfer.to_terminal_name}, ~{transfer.transfer_duration_minutes} min)."
-                            ],
-                            "potential_setbacks": [
-                                "Conexão independente (bilhetes avulsos): atrasos na primeira perna "
-                                "não são cobertos pela companhia aérea da segunda perna."
-                            ],
-                        }
-
-                        if risk_level == "WARNING":
-                            metadata["potential_setbacks"].append(
-                                f"Janela de conexão de atenção ({conn_minutes // 60}h{conn_minutes % 60:02d}m): "
-                                f"restam apenas {buffer_min} min livres após o transfer em caso de trânsito na rodovia."
-                            )
-                        else:
-                            metadata["pros"].append(
-                                f"Janela de conexão segura ({conn_minutes // 60}h{conn_minutes % 60:02d}m) "
-                                f"com {buffer_min} min livres após transfer."
-                            )
-
-                        # Cálculo do Trivio Score com penalidade de bilhete avulso
-                        score_quote_mock = {
-                            "modal": "AIR",  # Ponderação mista
-                            "service_class": _get_val(q2, "service_class", "ECONOMY"),
-                            "departure_time": dep1,
-                            "arrival_time": arr2,
-                            "duration_minutes": total_duration_minutes,
-                            "door_to_door_duration_minutes": total_d2d,
-                            "total_effective_price": total_price,
-                            "route_metadata": {
-                                "is_direct": False,
-                                "stops_count": 1,
-                                "connection_diagnostics": {
-                                    "total_connection_penalty_points": PENALTY_VIRTUAL_INTERLINE + (30.0 if risk_level == "WARNING" else 0.0)
-                                },
+                    # Cálculo do Trivio Score com penalidade de bilhete avulso
+                    score_quote_mock = {
+                        "modal": "AIR",  # Ponderação mista
+                        "service_class": _get_val(q2, "service_class", "ECONOMY"),
+                        "departure_time": dep1,
+                        "arrival_time": arr2,
+                        "duration_minutes": total_duration_minutes,
+                        "door_to_door_duration_minutes": total_d2d,
+                        "total_effective_price": total_price,
+                        "route_metadata": {
+                            "is_direct": False,
+                            "stops_count": 1,
+                            "connection_diagnostics": {
+                                "total_connection_penalty_points": PENALTY_VIRTUAL_INTERLINE + (30.0 if risk_level == "WARNING" else 0.0)
                             },
-                        }
-                        breakdown = calculate_score_breakdown(score_quote_mock, hourly_time_value=hourly_time_value)
-                        metadata["score_breakdown"] = breakdown.to_dict()
+                        },
+                    }
+                    breakdown = calculate_score_breakdown(score_quote_mock, hourly_time_value=hourly_time_value)
+                    metadata["score_breakdown"] = breakdown.to_dict()
 
-                        interline_route = VirtualInterlineRoute(
-                            origin_id=origin_id,
-                            destination_id=destination_id,
-                            hub_name=hub_name,
-                            hub_id=hub_id,
-                            leg1=q1,
-                            transfer=transfer,
-                            leg2=q2,
-                            connection_window_minutes=conn_minutes,
-                            buffer_minutes=buffer_min,
-                            risk_level=risk_level,
-                            total_effective_price=total_price,
-                            total_duration_minutes=total_duration_minutes,
-                            door_to_door_duration_minutes=total_d2d,
-                            trivio_score=breakdown.trivio_score,
-                            route_metadata=metadata,
-                        )
-                        valid_routes.append(interline_route)
+                    interline_route = VirtualInterlineRoute(
+                        origin_id=origin_id,
+                        destination_id=destination_id,
+                        hub_name=hub_name,
+                        hub_id=hub_id,
+                        leg1=q1,
+                        transfer=transfer,
+                        leg2=q2,
+                        connection_window_minutes=conn_minutes,
+                        buffer_minutes=buffer_min,
+                        risk_level=risk_level,
+                        total_effective_price=total_price,
+                        total_duration_minutes=total_duration_minutes,
+                        door_to_door_duration_minutes=total_d2d,
+                        trivio_score=breakdown.trivio_score,
+                        route_metadata=metadata,
+                    )
+                    valid_routes.append(interline_route)
 
-        # Ordena pelo menor Trivio Score (melhor custo-benefício e menor atrito)
-        valid_routes.sort(key=lambda r: r.trivio_score)
-        return valid_routes[:max_results]
+    # Ordena pelo menor Trivio Score (melhor custo-benefício e menor atrito)
+    valid_routes.sort(key=lambda r: r.trivio_score)
+    return valid_routes[:max_results]
 
 
 # ==============================================================================
@@ -528,19 +456,12 @@ def build_virtual_interline_routes(
                 transfer_leg = calculate_terminal_transfer(from_term=t1, to_term=t2)
                 transfer_map[pair_key] = transfer_leg
 
-    # Inicializa e processa o grafo NetworkX
-    engine = VirtualInterliningGraph()
-    engine.build_graph(
+    return find_interline_routes(
         origin_id=origin_id,
         destination_id=destination_id,
         leg1_quotes=leg1_quotes,
         leg2_quotes=leg2_quotes,
         transfer_map=transfer_map,
-    )
-
-    return engine.find_interline_routes(
-        origin_id=origin_id,
-        destination_id=destination_id,
         hub_name=hub_name,
         hub_id=hub_id,
         min_connection_minutes=min_connection_minutes,

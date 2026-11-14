@@ -129,7 +129,8 @@ export function useSearchWebSocket(): UseSearchWebSocketReturn {
           setIsSearching(true);
           setError(null);
           setCompletedStats(null);
-          setActiveProviders(data.providers || ["clickbus", "ignav"]);
+          // O backend sempre envia a lista (vazia quando nenhuma fonte cobre a rota)
+          setActiveProviders(Array.isArray(data.providers) ? data.providers : []);
           break;
         }
 

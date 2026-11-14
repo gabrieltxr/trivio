@@ -1,4 +1,4 @@
-"""Unit tests for Virtual Interlining Graph Engine (NetworkX)."""
+"""Unit tests for the Virtual Interlining engine (ônibus até o hub + voo do hub)."""
 
 from datetime import datetime, timedelta
 

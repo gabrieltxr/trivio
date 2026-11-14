@@ -11,39 +11,11 @@ e anexar aos metadados o histórico de todos os vendedores com seus respectivos 
 destacando a economia gerada para o viajante.
 """
 
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, TypeVar
 
 from app.collectors.base import generate_dedup_signature
 
 T = TypeVar("T")
-
-
-@dataclass
-class SellerOffer:
-    """Representa a oferta de um canal/broker específico para uma viagem."""
-
-    provider_source: str
-    total_effective_price: float
-    base_price: float
-    taxes_price: float = 0.0
-    service_class: str = ""
-    deep_link: Optional[str] = None
-    extra: Dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        result = {
-            "provider_source": self.provider_source,
-            "total_effective_price": self.total_effective_price,
-            "base_price": self.base_price,
-            "taxes_price": self.taxes_price,
-            "service_class": self.service_class,
-        }
-        if self.deep_link:
-            result["deep_link"] = self.deep_link
-        if self.extra:
-            result["extra"] = self.extra
-        return result
 
 
 def _get_val(obj: Any, attr: str, default: Any = None) -> Any:

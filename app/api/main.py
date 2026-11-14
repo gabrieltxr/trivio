@@ -167,7 +167,7 @@ async def validation_exception_handler(
         })
 
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=422,   # literal: o nome da constante mudou entre versões do Starlette
         content={
             "error": True,
             "status_code": 422,

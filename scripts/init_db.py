@@ -21,8 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from rich.console import Console
 from rich.table import Table
 
-from app.database import Base, engine, SessionLocal
-from app.models import Hub, Terminal, ProviderMapping, ModalType
+from app.database import Base, engine, SessionLocal, ensure_schema
+from app.models import Hub, ModalType
+from app.seed import upsert_hubs
 
 console = Console()
 
@@ -323,74 +324,15 @@ def init_database(reset: bool = False):
         console.print("[yellow]Dropping existing database tables...[/yellow]")
         Base.metadata.drop_all(bind=engine)
 
+    # ensure_schema, e não só create_all: num banco antigo também acrescenta colunas novas,
+    # troca restrições únicas e remove índices aposentados (create_all não mexe em tabela existente).
     console.print("[green]Creating database tables...[/green]")
-    Base.metadata.create_all(bind=engine)
+    ensure_schema(engine)
 
     db = SessionLocal()
     try:
-        total_hubs = 0
-        total_terminals = 0
-        total_mappings = 0
-
-        for hub_data in SEED_HUBS:
-            # Check or insert Hub
-            hub = db.query(Hub).filter(Hub.ibge_code == hub_data["ibge_code"]).first()
-            if not hub:
-                hub = Hub(
-                    ibge_code=hub_data["ibge_code"],
-                    name=hub_data["name"],
-                    state=hub_data["state"],
-                    latitude=hub_data["latitude"],
-                    longitude=hub_data["longitude"],
-                )
-                db.add(hub)
-                db.flush()
-                total_hubs += 1
-
-            for term_data in hub_data["terminals"]:
-                # Check or insert Terminal
-                terminal = (
-                    db.query(Terminal)
-                    .filter(
-                        Terminal.hub_id == hub.id,
-                        Terminal.official_code == term_data["official_code"],
-                    )
-                    .first()
-                )
-                if not terminal:
-                    terminal = Terminal(
-                        hub_id=hub.id,
-                        name=term_data["name"],
-                        modal=term_data["modal"],
-                        official_code=term_data["official_code"],
-                        latitude=term_data["latitude"],
-                        longitude=term_data["longitude"],
-                        avg_city_center_distance_km=term_data["avg_city_center_distance_km"],
-                        estimated_transfer_cost_brl=term_data["estimated_transfer_cost_brl"],
-                        estimated_transfer_minutes=term_data["estimated_transfer_minutes"],
-                    )
-                    db.add(terminal)
-                    db.flush()
-                    total_terminals += 1
-
-                for map_data in term_data.get("mappings", []):
-                    # Check or insert ProviderMapping
-                    mapping = (
-                        db.query(ProviderMapping)
-                        .filter(
-                            ProviderMapping.provider_name == map_data["provider_name"],
-                            ProviderMapping.external_id == map_data["external_id"],
-                        )
-                        .first()
-                    )
-                    if not mapping:
-                        mapping = ProviderMapping(
-                            terminal_id=terminal.id,
-                            provider_name=map_data["provider_name"],
-                            external_id=map_data["external_id"],
-                        )
-                        db.add(mapping)
-                        total_mappings += 1
+        created = upsert_hubs(db, SEED_HUBS)
+        total_hubs, total_terminals, total_mappings = created["hubs"], created["terminals"], created["mappings"]
 
         db.commit()
 

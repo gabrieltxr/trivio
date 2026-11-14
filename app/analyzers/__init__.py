@@ -3,8 +3,8 @@
 from app.analyzers.interliner import (
     TransferLeg,
     VirtualInterlineRoute,
-    VirtualInterliningGraph,
     build_virtual_interline_routes,
+    find_interline_routes,
     calculate_terminal_transfer,
 )
 from app.analyzers.price_thermometer import (
@@ -62,10 +62,10 @@ __all__ = [
     "fetch_historical_prices_from_db",
     "fetch_route_monthly_means",
     "MIN_OFFICIAL_MONTHS",
-    # Virtual Interlining Graph
+    # Virtual Interlining
     "TransferLeg",
     "VirtualInterlineRoute",
-    "VirtualInterliningGraph",
+    "find_interline_routes",
     "build_virtual_interline_routes",
     "calculate_terminal_transfer",
 ]

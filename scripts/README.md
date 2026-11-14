@@ -25,6 +25,7 @@ semeia um banco temporário em `tests/conftest.py`.
 | `import_antt_fares.py` | Bilhetes de ônibus vendidos (ANTT Monitriip), agregados por rota, classe e mês de viagem. Respeita o `Crawl-delay` de 10 s do portal, então a importação é lenta. | `python scripts/import_antt_fares.py --months 3` (também `--list`, `--inspect CSV`, `--inspect-remote AAAA-MM`, `--file CSV`) |
 | `import_antt_schedules.py` | Grade de horários interestaduais da ANTT (CSV "Horários - SIGMA" baixado à mão). Reimportar o mesmo período substitui as linhas dele. | `python scripts/import_antt_schedules.py --file <csv>` |
 | `import_gtfs.py` | Feed GTFS de um órgão ou operador. As fontes conhecidas estão em `app/collectors/gtfs/feeds.py`. | `python scripts/import_gtfs.py --feed artesp --file <zip>` |
+| `cleanup_legacy_data.py` | Apaga mapeamentos de provedores removidos (Amadeus, Kiwi...), cotações vencidas ou que não deveriam estar gravadas e, com `--prune-queries`, consultas do Ignav vencidas de antes da leitura do saldo. Depois atualiza esquema e `ANALYZE`. Sem `--apply`, só simula. | `python scripts/cleanup_legacy_data.py` e depois `--apply` |
 | `report_hub_coverage.py` | Cidades que têm rota com dados (ANTT ou GTFS) até os hubs atuais: ajuda a escolher novos hubs. | `python scripts/report_hub_coverage.py --out relatorio.csv` |
 | `test_collector.py` | Roda no terminal a mesma busca do site (`/ws/search`), sem navegador. Não é um teste do pytest. | `python scripts/test_collector.py --origin HUB:SAO --dest HUB:RIO --date AAAA-MM-DD` |
 

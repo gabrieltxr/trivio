@@ -13,8 +13,7 @@ httpx>=0.26.0
 tenacity>=8.2.0
 protego>=0.3.0   # Parser de robots.txt (spec do Google: regra mais específica vence)
 
-# Graph, Geo & Entity Resolution (Kiwi / Rome2Rio / Kayak Patterns)
-networkx>=3.2.0
+# Geo & Entity Resolution (Rome2Rio / Kayak Patterns)
 geopy>=2.4.0
 rapidfuzz>=3.6.0
 

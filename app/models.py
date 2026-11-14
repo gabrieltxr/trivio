@@ -14,8 +14,10 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Enum as SQLEnum,
+    Index,
     JSON,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -267,18 +269,27 @@ class BusSchedule(Base):
     feed = Column(String(40), nullable=True)
     imported_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    __table_args__ = (
-        UniqueConstraint(
-            "route_key", "line_prefix", "service_class", "departure_time", "source_period",
-            name="uq_bus_schedule",
-        ),
-    )
+    # Unicidade (uq_bus_schedule_feed, abaixo da classe) inclui o feed: a mesma partida pode
+    # vir da ANTT e de um feed GTFS no mesmo período. COALESCE porque o feed da ANTT é NULL e,
+    # em SQL, NULLs nunca colidem: sem ele, duas linhas da ANTT iguais passariam.
 
     def __repr__(self) -> str:
         return (
             f"<BusSchedule({self.route_key} {self.departure_time} {self.service_class} "
             f"{self.company_name} {self.line_prefix})>"
         )
+
+
+BUS_SCHEDULE_UNIQUE_INDEX = Index(
+    "uq_bus_schedule_feed",
+    BusSchedule.route_key,
+    BusSchedule.line_prefix,
+    BusSchedule.service_class,
+    BusSchedule.departure_time,
+    BusSchedule.source_period,
+    func.coalesce(BusSchedule.feed, ""),
+    unique=True,
+)
 
 
 class GtfsRouteFare(Base):

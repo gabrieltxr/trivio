@@ -118,37 +118,13 @@ def route_city_names(candidates: List[Dict]) -> List[str]:
 
 
 def apply(candidates: List[Dict]) -> Dict[str, int]:
+    """Grava o que falta (mesmas regras da semente padrão, em app/seed.py)."""
     from app.database import SessionLocal, ensure_schema
-    from app.models import Hub, ProviderMapping, Terminal
+    from app.seed import upsert_hubs
 
     ensure_schema()
-    created = {"hubs": 0, "terminals": 0, "mappings": 0}
     with SessionLocal() as db:
-        for data in candidates:
-            hub = db.query(Hub).filter(Hub.ibge_code == data["ibge_code"]).first()
-            if hub is None:
-                hub = Hub(ibge_code=data["ibge_code"], name=data["name"], state=data["state"],
-                          latitude=data["latitude"], longitude=data["longitude"])
-                db.add(hub)
-                db.flush()
-                created["hubs"] += 1
-            for term in data["terminals"]:
-                existing = db.query(Terminal).filter(Terminal.official_code == term["official_code"]).first()
-                if existing is not None:
-                    continue
-                terminal = Terminal(
-                    hub_id=hub.id, name=term["name"], modal=term["modal"], official_code=term["official_code"],
-                    latitude=term["latitude"], longitude=term["longitude"],
-                    avg_city_center_distance_km=term.get("avg_city_center_distance_km", 5.0),
-                    estimated_transfer_cost_brl=term.get("estimated_transfer_cost_brl", 25.0),
-                    estimated_transfer_minutes=term.get("estimated_transfer_minutes", 20),
-                )
-                db.add(terminal)
-                db.flush()
-                created["terminals"] += 1
-                for mapping in term.get("mappings", []):
-                    db.add(ProviderMapping(terminal_id=terminal.id, **mapping))
-                    created["mappings"] += 1
+        created = upsert_hubs(db, candidates)
         db.commit()
     return created
 
