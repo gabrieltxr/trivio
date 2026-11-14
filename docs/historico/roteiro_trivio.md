@@ -1,3 +1,5 @@
+> **Documento arquivado (nov/2026).** Este é o roteiro inicial do projeto, mantido só como histórico: a estrutura de pastas, as dependências (ex.: NetworkX) e o plano de fases já não correspondem ao código. As regras de cálculo das seções 6 e 7 (TTL, Trivio Score e `route_metadata`) foram atualizadas e movidas para [`docs/algoritmos.md`](../algoritmos.md), que é a referência atual.
+
 # Project Specification & Roadmap: TRIVIO
 
 > **Target Audience:** AI Coding Agents (Antigravity), Automated Scaffolds & Developers  

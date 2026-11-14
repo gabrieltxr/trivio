@@ -3,7 +3,7 @@
 Calcula o TTL (Time-To-Live) em segundos para cotações de passagens com base na
 proximidade da data da viagem.
 
-Regras de Negócio (Roteiro Trivio Seção 6.1):
+Regras de Negócio (docs/algoritmos.md, seção 1):
 - Viagem em <= 2 dias: TTL = 30 minutos (1.800s)
 - Viagem entre 3 e 7 dias: TTL = 2 horas (7.200s)
 - Viagem entre 8 e 21 dias: TTL = 6 horas (21.600s)

@@ -26,6 +26,8 @@ from app.models import FareQuote, ModalType, RouteMonthlyFare
 logger = logging.getLogger("trivio.analyzers.thermometer")
 
 MIN_SAMPLES_THRESHOLD = 5
+# Mesma regra de percentil da referência histórica (road_reference._percentile).
+QUANTILE_INTERPOLATION = "linear"
 HISTORY_LOOKBACK_DAYS = 90   # janela do histórico próprio (fare_quotes) por collected_at
 
 
@@ -114,10 +116,12 @@ def evaluate_price_distribution(
             ),
         )
 
-    # Cálculos quantitativos via Polars
-    p25 = round(float(series.quantile(0.25)), 2)
+    # Cálculos quantitativos via Polars. A interpolação é linear, igual à da referência histórica
+    # (app/analyzers/road_reference.py::_percentile); o padrão do Polars ('nearest') daria quartis
+    # diferentes para a mesma série.
+    p25 = round(float(series.quantile(0.25, interpolation=QUANTILE_INTERPOLATION)), 2)
     median = round(float(series.median()), 2)
-    p75 = round(float(series.quantile(0.75)), 2)
+    p75 = round(float(series.quantile(0.75, interpolation=QUANTILE_INTERPOLATION)), 2)
 
     # Cálculo da posição percentil exata (0 a 100)
     # Proporção de amostras estritamente menores que a tarifa atual

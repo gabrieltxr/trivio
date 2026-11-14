@@ -11,6 +11,7 @@ from app.analyzers.price_thermometer import (
     evaluate_price_distribution,
     fetch_historical_prices_from_db,
 )
+from app.analyzers.road_reference import _percentile
 from app.models import Base, FareQuote, Hub, ModalType, Terminal
 
 
@@ -119,6 +120,15 @@ def test_price_thermometer_medium_status():
     assert res.status == "MEDIUM"
     assert 25 < res.percentile < 75
     assert "faixa padrão" in res.recommendation
+
+
+def test_price_thermometer_quartiles_match_road_reference():
+    """O Termômetro e a referência histórica usam a mesma interpolação (linear) nos quartis."""
+    history = [100.0, 120.0, 140.0, 160.0, 200.0, 220.0, 240.0, 270.0, 300.0, 350.0]
+    res = evaluate_price_distribution(210.0, history)
+    ordered = sorted(history)
+    assert res.p25_brl == round(_percentile(ordered, 0.25), 2) == 145.0
+    assert res.p75_brl == round(_percentile(ordered, 0.75), 2) == 262.5
 
 
 def test_price_thermometer_high_status():

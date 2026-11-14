@@ -19,6 +19,8 @@ O **Trivio** resolve essa assimetria através de um pipeline algorítmico avanç
 4. **Virtual Interlining & Conexões Híbridas:** Combinação de trechos que viabiliza rotas combinadas (ônibus regional + voo de capital) com garantia de tempo mínimo de conexão (MCT).
 5. **Hacker Fares:** Geração automática de opções desdobradas (ex: ida de avião e volta de leito noturno), desbloqueando economias de até 60%.
 
+As fórmulas e os limiares de cada etapa estão em [`docs/algoritmos.md`](docs/algoritmos.md).
+
 ---
 
 ## 🏗️ Arquitetura do Sistema
@@ -371,8 +373,10 @@ trivio/
 │   └── fixtures/               # Resposta real do Ignav, com identificadores fictícios
 ├── .env.example                # Template de configuração de variáveis de ambiente
 ├── .gitignore                  # Regras de exclusão para Git
-├── requirements.txt            # Dependências Python
-└── roteiro_trivio.md           # Roteiro canônico e roadmap de desenvolvimento
+├── docs/
+│   ├── algoritmos.md           # TTL do cache, Trivio Score, interlining e formato do route_metadata
+│   └── historico/              # Roteiro inicial do projeto (arquivado)
+└── requirements.txt            # Dependências Python
 ```
 
 ---
