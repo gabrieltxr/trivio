@@ -16,7 +16,6 @@ from app.cache.ttl_policy import (
 )
 from app.cache.deduplicator import (
     QuoteDeduplicator,
-    SellerOffer,
     deduplicate_quotes,
 )
 
@@ -30,6 +29,5 @@ __all__ = [
     "calculate_expiration_datetime",
     "get_ttl_tier",
     "QuoteDeduplicator",
-    "SellerOffer",
     "deduplicate_quotes",
 ]

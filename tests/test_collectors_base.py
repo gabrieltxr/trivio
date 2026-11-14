@@ -32,7 +32,7 @@ def test_standardized_quote_properties():
         origin_external_id="GRU",
         destination_external_id="SDU",
         modal="AIR",
-        provider_source="amadeus",
+        provider_source="broker_a",
         carrier_name="LATAM",
         service_class="ECONOMY",
         departure_time=dep,

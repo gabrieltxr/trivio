@@ -39,6 +39,16 @@ const SORT_ATTR: Record<SortOption, string> = {
 
 const NAMES: Record<string, string> = { clickbus: "A ClickBus", ignav: "O provedor aéreo" };
 
+/** Nome exibido de cada fonte anunciada em SEARCH_STARTED (`providers`). */
+const PROVIDER_LABELS: Record<string, string> = {
+  antt_projection: "Ônibus (estimativa ANTT)",
+  ignav: "Aéreo ao vivo",
+  virtual_interlining: "Ônibus + avião",
+  clickbus: "ClickBus",
+};
+
+const providerLabel = (code: string) => PROVIDER_LABELS[code] ?? code;
+
 const ROAD_CLASS_LABELS: Record<string, string> = {
   CONVENCIONAL: "Convencional",
   EXECUTIVO: "Executivo",
@@ -240,7 +250,7 @@ export default function Home() {
                       <span className="flex items-center gap-1.5 text-cyan-800 font-semibold">
                         <span className="w-2 h-2 rounded-full bg-cyan-600 animate-ping" />
                         Buscando em tempo real nos coletores... (
-                        {activeProviders.join(" • ") || "ClickBus, Ignav"})
+                        {activeProviders.map(providerLabel).join(" • ") || "conferindo as fontes"})
                       </span>
                     ) : completedStats ? (
                       <span>

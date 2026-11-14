@@ -16,7 +16,7 @@ O **Trivio** resolve essa assimetria através de um pipeline algorítmico avanç
 1. **Custo Efetivo Real Porta a Porta:** Desagrega e recalcula taxas ANAC/ANTT, estimativas de bagagem e deslocamentos urbanos.
 2. **Trivio Score (Agony Index):** Métrica proprietária que quantifica tempo, custo, cansaço físico e conveniência horária.
 3. **Termômetro de Preços (Polars Engine):** Identificação instantânea de tarifas (*LOW*, *MEDIUM*, *HIGH*) baseadas em quartis estatísticos (P25/P50/P75).
-4. **Virtual Interlining & Conexões Híbridas:** Algoritmo em grafo NetworkX que viabiliza rotas combinadas (ônibus regional + voo de capital) com garantia de tempo mínimo de conexão (MCT).
+4. **Virtual Interlining & Conexões Híbridas:** Combinação de trechos que viabiliza rotas combinadas (ônibus regional + voo de capital) com garantia de tempo mínimo de conexão (MCT).
 5. **Hacker Fares:** Geração automática de opções desdobradas (ex: ida de avião e volta de leito noturno), desbloqueando economias de até 60%.
 
 ---
@@ -100,7 +100,6 @@ A ClickBus (`app/collectors/road/clickbus.py`) continua no código, mas está de
 - **Framework Web:** FastAPI (com ciclo de vida assíncrono via `lifespan` e suporte a WebSockets).
 - **ORM & Banco de Dados:** SQLAlchemy 2.0 (sessões síncronas), compatível com SQLite e PostgreSQL.
 - **Engenharia de Dados:** Polars (cálculo vetorial ultrarrápido de quartis estatísticos de preços).
-- **Grafos & Conexões:** NetworkX (algoritmo de interconexão modal com validação de MCT).
 - **Geolocalização:** Geopy (distâncias geodésicas e raios de abrangência regional).
 - **Resolução de Entidades:** RapidFuzz (busca aproximada de cidades e terminais pelo nome).
 - **Resiliência de Rede:** HTTPX + Tenacity (exponential backoff com jitter e isolamento bulkhead).
@@ -304,7 +303,7 @@ gravadas no banco**, para não contaminar o histórico do Termômetro de Preço.
 trivio/
 ├── app/
 │   ├── analyzers/              # Motores de Inteligência do Trivio
-│   │   ├── interliner.py       # Virtual Interlining com NetworkX
+│   │   ├── interliner.py       # Virtual Interlining (ônibus + voo)
 │   │   ├── price_thermometer.py# Termômetro de preços com Polars (régua ANAC / ANTT)
 │   │   ├── road_fare_projection.py # Projeção da tarifa rodoviária para o mês da viagem
 │   │   ├── road_reference.py   # Faixa histórica de preço por rota e classe (fora do ranking)

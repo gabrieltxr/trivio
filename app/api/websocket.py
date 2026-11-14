@@ -20,7 +20,7 @@ import json
 import logging
 import math
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 import uuid
 from zoneinfo import ZoneInfo
 
@@ -28,6 +28,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from app.analyzers.interliner import VirtualInterlineRoute, build_virtual_interline_routes
+from app.analyzers.road_fare_projection import RoadSeriesCache
 from app.analyzers.price_thermometer import enrich_quotes_batch_with_thermometer
 from app.analyzers.route_evaluator import enrich_quote_with_evaluation
 from app.analyzers.trivio_scorer import generate_hacker_fares, score_and_rank_quotes
@@ -309,6 +310,7 @@ def _build_interline_quotes(
     leg_results: Dict[str, List[StandardizedQuote]],
     hourly_value: float,
     db: Session,
+    series_cache: Optional[RoadSeriesCache] = None,
 ) -> List[StandardizedQuote]:
     """Conexão Ônibus (Origem -> Hub) + Voo (Hub -> Destino) para cada hub candidato.
 
@@ -333,7 +335,8 @@ def _build_interline_quotes(
             continue
 
         leg1_raw = build_antt_legs_to_hub(
-            db, orig_hub, orig_road_term, hub, hub_road_term, [q.departure_time for q in leg2]
+            db, orig_hub, orig_road_term, hub, hub_road_term, [q.departure_time for q in leg2],
+            cache=series_cache,
         )
         if not leg1_raw:   # sem série ANTT para este trecho: horário e tarifa do GTFS
             leg1_raw = build_gtfs_leg_to_hub(
@@ -381,6 +384,7 @@ def _build_interline_quotes_by_id(
     interline_hub_ids: List[Tuple[int, int, int]],
     leg_results: Dict[str, List[StandardizedQuote]],
     hourly_value: float,
+    series_cache: Optional[RoadSeriesCache] = None,
 ) -> List[StandardizedQuote]:
     """_build_interline_quotes numa Session própria (ver _run_db_work)."""
     interline_hubs = [
@@ -396,7 +400,30 @@ def _build_interline_quotes_by_id(
         leg_results=leg_results,
         hourly_value=hourly_value,
         db=session,
+        series_cache=series_cache,
     )
+
+
+def _interline_hub_ids_with_bus(
+    session: Session,
+    orig_hub_id: int,
+    hub_ids: List[int],
+    travel_date: str,
+    series_cache: Optional[RoadSeriesCache] = None,
+) -> Set[int]:
+    """Hubs da conexão com ônibus registrado (ANTT ou GTFS) a partir da origem.
+
+    Só esses hubs têm o voo consultado no Ignav: cada um custa uma request paga.
+    """
+    orig_hub = session.get(Hub, orig_hub_id)
+    with_bus: Set[int] = set()
+    for hub_id in hub_ids:
+        hub = session.get(Hub, hub_id)
+        if has_antt_route(session, orig_hub, hub, travel_date, series_cache) or has_gtfs_route(session, orig_hub, hub):
+            with_bus.add(hub_id)
+        else:
+            logger.info(f"[interline] {hub.name}: sem ônibus na ANTT até o hub; voo não consultado.")
+    return with_bus
 
 
 def _road_batch_by_id(
@@ -406,6 +433,7 @@ def _road_batch_by_id(
     hourly_value: float,
     start_search_time: float,
     gtfs_fallback: bool,
+    series_cache: Optional[RoadSeriesCache] = None,
 ) -> Tuple[List[StandardizedQuote], float]:
     """Monta e processa um lote de ônibus numa Session própria (ver _run_db_work).
 
@@ -415,7 +443,9 @@ def _road_batch_by_id(
     from_hub_id, from_road_term_id, to_hub_id, to_road_term_id = road_ids
     from_hub, from_road_term = session.get(Hub, from_hub_id), session.get(Terminal, from_road_term_id)
     to_hub, to_road_term = session.get(Hub, to_hub_id), session.get(Terminal, to_road_term_id)
-    raw = build_antt_road_quotes(session, from_hub, from_road_term, to_hub, to_road_term, travel_date)
+    raw = build_antt_road_quotes(
+        session, from_hub, from_road_term, to_hub, to_road_term, travel_date, cache=series_cache,
+    )
     if not raw and gtfs_fallback:   # sem série ANTT para a rota: horário e tarifa do feed GTFS, se houver
         raw = build_gtfs_road_quotes(session, from_hub, from_road_term, to_hub, to_road_term, travel_date)
     elapsed = round((time.perf_counter() - start_search_time) * 1000, 1)
@@ -450,6 +480,7 @@ async def _emit_antt_road_batch(
     travel_date: str,
     hourly_value: float,
     start_search_time: float,
+    series_cache: Optional[RoadSeriesCache] = None,
 ) -> List[StandardizedQuote]:
     """Ônibus Origem -> Destino a partir do banco ANTT (sem custo), emitido como lote.
 
@@ -457,7 +488,7 @@ async def _emit_antt_road_batch(
     """
     road_ids = (from_hub.id, from_road_term.id, to_hub.id, to_road_term.id)
     processed, elapsed = await _run_db_work(
-        _road_batch_by_id, road_ids, travel_date, hourly_value, start_search_time, True,
+        _road_batch_by_id, road_ids, travel_date, hourly_value, start_search_time, True, series_cache,
     )
     if not processed:
         await websocket.send_json({
@@ -650,13 +681,23 @@ async def _run_search(
 
     # Ônibus + avião: só quando o usuário pede a conexão. Cada hub custa uma request do
     # Ignav (o voo do hub), então só entram hubs com ônibus registrado na ANTT até eles.
+    # Série ANTT lida nesta busca, por rota e classe: o ônibus direto, a referência histórica e
+    # o trecho até o hub usam a mesma série, e ela vai ao banco uma vez. As etapas que a usam
+    # rodam uma de cada vez (cada _run_db_work é aguardado antes do próximo).
+    series_cache: RoadSeriesCache = {}
     interline_hubs: List[Tuple[Hub, Terminal, Terminal]] = []
     if enable_interlining and dest_air_code and orig_road_ok:
-        for hub, hub_road_term, hub_air_term in _find_interline_hubs(orig_hub, dest_hub, db, radius_km):
-            if has_antt_route(db, orig_hub, hub, travel_date) or has_gtfs_route(db, orig_hub, hub):
-                interline_hubs.append((hub, hub_road_term, hub_air_term))
-            else:
-                logger.info(f"[interline] {hub.name}: sem ônibus na ANTT até o hub; voo não consultado.")
+        candidates = _find_interline_hubs(orig_hub, dest_hub, db, radius_km)
+        if candidates:
+            # A conferência lê o banco: vai para uma thread, e a conexão desta sessão volta ao
+            # pool antes da espera (segurar uma enquanto a thread pede outra esgota o pool).
+            # Os hubs e terminais já lidos continuam acessíveis depois do close().
+            db.close()
+            with_bus = await _run_db_work(
+                _interline_hub_ids_with_bus, orig_hub.id, [hub.id for hub, _, _ in candidates],
+                travel_date, series_cache,
+            )
+            interline_hubs = [c for c in candidates if c[0].id in with_bus]
 
     # 1. Emite SEARCH_STARTED
     await websocket.send_json({
@@ -743,13 +784,13 @@ async def _run_search(
         if road_available:
             all_outbound_quotes.extend(await _emit_antt_road_batch(
                 websocket, session_id, orig_hub, orig_road_term, dest_hub, dest_road_term,
-                travel_date, hourly_value, start_search_time,
+                travel_date, hourly_value, start_search_time, series_cache,
             ))
             if return_date:
                 inbound_road, _ = await _run_db_work(
                     _road_batch_by_id,
                     (dest_hub.id, dest_road_term.id, orig_hub.id, orig_road_term.id),
-                    return_date, hourly_value, start_search_time, False,
+                    return_date, hourly_value, start_search_time, False, series_cache,
                 )
                 all_inbound_quotes.extend(inbound_road)
 
@@ -809,6 +850,7 @@ async def _run_search(
                 destination_city=dest_hub.name,
                 destination_state=dest_hub.state,
                 travel_date=travel_date,
+                series_cache=series_cache,
             )
             if references:
                 await websocket.send_json({
@@ -835,6 +877,7 @@ async def _run_search(
                     interline_hub_ids=[(h.id, r.id, a.id) for h, r, a in interline_hubs],
                     leg_results=leg_results,
                     hourly_value=hourly_value,
+                    series_cache=series_cache,
                 )
                 if interline_quotes:
                     all_outbound_quotes.extend(interline_quotes)

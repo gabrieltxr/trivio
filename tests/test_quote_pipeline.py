@@ -177,7 +177,7 @@ def test_timezone_aware_madrugada_detection():
 
     quote = StandardizedQuote(
         origin_external_id="POA", destination_external_id="SDU", modal="AIR",
-        provider_source="amadeus", carrier_name="Gol", service_class="ECONOMY",
+        provider_source="broker_a", carrier_name="Gol", service_class="ECONOMY",
         departure_time=dep_utc, arrival_time=arr_utc, duration_minutes=360, base_price=300.0,
     )
 

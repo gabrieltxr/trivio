@@ -19,12 +19,14 @@ from sqlalchemy.orm import Session
 
 from app.collectors.anac.airfares import ANAC_ALL_CLASSES, ANAC_SOURCE
 from app.collectors.anac.airports import to_icao
+from app.analyzers.road_fare_projection import RoadSeriesCache, fetch_fare_observations, monthly_means
 from app.collectors.antt.monitriip import build_route_key
 from app.models import FareQuote, ModalType, RouteMonthlyFare
 
 logger = logging.getLogger("trivio.analyzers.thermometer")
 
 MIN_SAMPLES_THRESHOLD = 5
+HISTORY_LOOKBACK_DAYS = 90   # janela do histórico próprio (fare_quotes) por collected_at
 
 
 @dataclass
@@ -181,13 +183,21 @@ def fetch_route_monthly_means(
     destination_state: Optional[str],
     service_class: str,
     modal: ModalType = ModalType.ROAD,
+    series_cache: Optional[RoadSeriesCache] = None,
 ) -> List[Tuple[str, float, int]]:
     """Preço médio por mês de viagem de uma rota e classe: [(AAAA-MM, média, bilhetes)].
 
     Quando o mesmo mês de viagem aparece em mais de um arquivo de emissão, as médias
-    são combinadas ponderando pela quantidade de bilhetes.
+    são combinadas ponderando pela quantidade de bilhetes. No rodoviário a leitura é a
+    mesma da projeção (`fetch_fare_observations`), e `series_cache` a compartilha.
     """
     route_key = build_route_key(origin_city, origin_state, destination_city, destination_state)
+    if modal == ModalType.ROAD:
+        try:
+            return monthly_means(fetch_fare_observations(db, route_key, service_class, series_cache))
+        except Exception as exc:
+            logger.warning(f"Falha ao consultar a série mensal oficial ({type(exc).__name__}: {exc}).")
+            return []
     stmt = select(
         RouteMonthlyFare.trip_month,
         RouteMonthlyFare.mean_brl,
@@ -225,7 +235,7 @@ def fetch_historical_prices_from_db(
     destination_terminal_id: int,
     modal: Optional[str] = None,
     service_class: Optional[str] = None,
-    days_back: int = 90,
+    days_back: int = HISTORY_LOOKBACK_DAYS,
 ) -> List[float]:
     """Busca preços históricos de bilhetes já registrados para o mesmo corredor."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)

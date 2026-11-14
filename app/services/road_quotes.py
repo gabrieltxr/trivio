@@ -28,6 +28,8 @@ from sqlalchemy.orm import Session
 from app.analyzers.interliner import MAX_INTERMODAL_CONNECTION_MINUTES, MIN_INTERMODAL_CONNECTION_MINUTES
 from app.analyzers.road_fare_projection import (
     RoadFareProjection,
+    RoadSeriesCache,
+    fetch_fare_observations,
     project_route_fare,
     projection_to_dict,
 )
@@ -76,21 +78,40 @@ def route_projections(
     dest_hub: Hub,
     trip_month: str,
     classes: Iterable[str] = ROAD_ESTIMATE_CLASSES,
+    cache: Optional[RoadSeriesCache] = None,
 ) -> List[RoadFareProjection]:
     """Projeções ANTT com estimativa para a rota, uma por classe que tem vendas."""
     projections = []
     for service_class in classes:
         projection = project_route_fare(
-            db, orig_hub.name, orig_hub.state, dest_hub.name, dest_hub.state, service_class, trip_month
+            db, orig_hub.name, orig_hub.state, dest_hub.name, dest_hub.state, service_class, trip_month,
+            cache=cache,
         )
         if projection.estimate_brl is not None:
             projections.append(projection)
     return projections
 
 
-def has_antt_route(db: Session, orig_hub: Hub, dest_hub: Hub, travel_date: str) -> bool:
-    """Há vendas na ANTT para o ônibus desta rota (no mês da viagem ou no nível recente)?"""
-    return bool(route_projections(db, orig_hub, dest_hub, travel_date[:7]))
+def has_antt_route(
+    db: Session,
+    orig_hub: Hub,
+    dest_hub: Hub,
+    travel_date: str,
+    cache: Optional[RoadSeriesCache] = None,
+) -> bool:
+    """Há vendas na ANTT para o ônibus desta rota (no mês da viagem ou no nível recente)?
+
+    Mesma resposta de `bool(route_projections(...))`, sem montar as projeções: uma classe
+    com algum bilhete sempre gera estimativa (do mês da viagem ou, sem ele, do nível
+    recente), então o mês não muda a resposta. Para na primeira classe com vendas; com
+    `cache`, a série lida aqui serve depois ao trecho de ônibus.
+    """
+    route_key = build_route_key(orig_hub.name, orig_hub.state, dest_hub.name, dest_hub.state)
+    return any(
+        observation.sample_size > 0
+        for service_class in ROAD_ESTIMATE_CLASSES
+        for observation in fetch_fare_observations(db, route_key, service_class, cache)
+    )
 
 
 # ------------------------------------------------------------------ horário (grade ANTT)
@@ -202,6 +223,7 @@ def build_antt_road_quotes(
     dest_hub: Hub,
     dest_road_term: Terminal,
     travel_date: str,
+    cache: Optional[RoadSeriesCache] = None,
 ) -> List[StandardizedQuote]:
     """Opções de ônibus Origem -> Destino para cada classe com vendas na ANTT.
 
@@ -209,7 +231,7 @@ def build_antt_road_quotes(
     Sem grade: uma opção com horário ilustrativo (diurno às 08:30; leito à noite).
     """
     day = datetime.strptime(travel_date, "%Y-%m-%d").date()
-    projections = route_projections(db, orig_hub, dest_hub, day.strftime("%Y-%m"))
+    projections = route_projections(db, orig_hub, dest_hub, day.strftime("%Y-%m"), cache=cache)
     if not projections:
         return []
 
@@ -267,6 +289,7 @@ def build_antt_legs_to_hub(
     hub: Hub,
     hub_road_term: Terminal,
     flight_departures: Iterable[datetime],
+    cache: Optional[RoadSeriesCache] = None,
 ) -> List[StandardizedQuote]:
     """Trecho de ônibus Origem -> hub da conexão, um para cada voo do hub.
 
@@ -277,7 +300,7 @@ def build_antt_legs_to_hub(
     departures = sorted(set(flight_departures))
     if not departures:
         return []
-    projections = route_projections(db, orig_hub, hub, departures[0].strftime("%Y-%m"))
+    projections = route_projections(db, orig_hub, hub, departures[0].strftime("%Y-%m"), cache=cache)
     if not projections:
         return []
     projections.sort(key=lambda p: p.estimate_brl)

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -176,8 +176,21 @@ def project_road_fare(
 # Acesso ao banco: única porta de entrada da série ANTT para a projeção
 # ==============================================================================
 
-def fetch_fare_observations(db: Session, route_key: str, service_class: str) -> List[FareObservation]:
+RoadSeriesCache = Dict[Tuple[str, str], List[FareObservation]]
+"""Série ANTT já lida, por (route_key, classe). Vale para uma busca: a projeção do ônibus,
+a referência histórica e a conexão leem a mesma série, e com o cache ela vai ao banco uma vez."""
+
+
+def fetch_fare_observations(
+    db: Session,
+    route_key: str,
+    service_class: str,
+    cache: Optional[RoadSeriesCache] = None,
+) -> List[FareObservation]:
     """Linhas da série ANTT de uma rota e classe, prontas para a projeção."""
+    key = (route_key, service_class)
+    if cache is not None and key in cache:
+        return cache[key]
     rows = db.execute(
         select(
             RouteMonthlyFare.emission_period,
@@ -190,10 +203,31 @@ def fetch_fare_observations(db: Session, route_key: str, service_class: str) -> 
             RouteMonthlyFare.service_class == service_class,
         )
     ).all()
-    return [
+    observations = [
         FareObservation(emission_period=e, trip_month=t, sample_size=int(n or 0), mean_brl=float(m))
         for e, t, n, m in rows
     ]
+    if cache is not None:
+        cache[key] = observations
+    return observations
+
+
+def monthly_means(observations: Iterable[FareObservation]) -> List[Tuple[str, float, int]]:
+    """Média por mês de viagem, ponderada por bilhetes: [(AAAA-MM, média, bilhetes)].
+
+    O mesmo mês de viagem aparece em vários meses de emissão: as médias são combinadas
+    pela quantidade de bilhetes. Mês sem bilhete fica de fora.
+    """
+    by_month: Dict[str, List[Tuple[float, int]]] = {}
+    for o in observations:
+        by_month.setdefault(o.trip_month, []).append((o.mean_brl, o.sample_size))
+    series: List[Tuple[str, float, int]] = []
+    for trip_month in sorted(by_month):
+        pairs = by_month[trip_month]
+        total = sum(weight for _, weight in pairs)
+        if total > 0:
+            series.append((trip_month, sum(v * w for v, w in pairs) / total, int(total)))
+    return series
 
 
 def project_route_fare(
@@ -204,14 +238,15 @@ def project_route_fare(
     destination_state: Optional[str],
     service_class: str,
     trip_month: str,
+    cache: Optional[RoadSeriesCache] = None,
 ) -> RoadFareProjection:
-    """Projeção de uma rota/classe lendo a série ANTT do banco.
+    """Projeção de uma rota/classe lendo a série ANTT do banco (ou do cache da busca).
 
     É a função usada pelo endpoint, pela referência rodoviária da busca e pelas
     estimativas de ônibus: todos os valores rodoviários saem do mesmo cálculo.
     """
     route_key = build_route_key(origin_city, origin_state, destination_city, destination_state)
-    observations = fetch_fare_observations(db, route_key, service_class)
+    observations = fetch_fare_observations(db, route_key, service_class, cache)
     return project_road_fare(observations, route_key, service_class, trip_month)
 
 

@@ -61,7 +61,7 @@ def mock_db_session():
             origin_terminal_id=10,
             destination_terminal_id=20,
             modal=ModalType.AIR,
-            provider_source="amadeus",
+            provider_source="broker_a",
             carrier_name="LATAM",
             service_class="ECONOMY",
             departure_time=now + timedelta(days=5),

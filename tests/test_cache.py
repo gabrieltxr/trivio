@@ -218,15 +218,15 @@ def test_deduplicator_with_fare_quote_orm():
     dep = datetime(2026, 11, 25, 14, 0)
     arr = datetime(2026, 11, 25, 15, 10)
 
-    # Voo Gol vendido via Amadeus (R$ 380) vs. Kiwi (R$ 420)
+    # Mesmo voo Gol vendido por dois canais: broker_a (R$ 380) e broker_b (R$ 420)
     sig = generate_dedup_signature("AIR", "GOL", "1", "2", dep, "ECONOMY")
 
-    fq_amadeus = FareQuote(
+    fq_broker_a = FareQuote(
         dedup_signature=sig,
         origin_terminal_id=1,
         destination_terminal_id=2,
         modal=ModalType.AIR,
-        provider_source="amadeus",
+        provider_source="broker_a",
         carrier_name="GOL",
         service_class="ECONOMY",
         departure_time=dep,
@@ -240,12 +240,12 @@ def test_deduplicator_with_fare_quote_orm():
         route_metadata={},
     )
 
-    fq_kiwi = FareQuote(
+    fq_broker_b = FareQuote(
         dedup_signature=sig,
         origin_terminal_id=1,
         destination_terminal_id=2,
         modal=ModalType.AIR,
-        provider_source="kiwi",
+        provider_source="broker_b",
         carrier_name="GOL",
         service_class="ECONOMY",
         departure_time=dep,
@@ -259,9 +259,9 @@ def test_deduplicator_with_fare_quote_orm():
         route_metadata={},
     )
 
-    deduped = deduplicate_quotes([fq_kiwi, fq_amadeus])
+    deduped = deduplicate_quotes([fq_broker_b, fq_broker_a])
     assert len(deduped) == 1
-    assert deduped[0].provider_source == "amadeus"
+    assert deduped[0].provider_source == "broker_a"
     assert deduped[0].total_effective_price == 380.0
     assert deduped[0].route_metadata["is_code_share"] is True
     assert deduped[0].route_metadata["savings_brl"] == 40.0

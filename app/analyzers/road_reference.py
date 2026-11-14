@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.analyzers.price_thermometer import MIN_OFFICIAL_MONTHS
-from app.analyzers.road_fare_projection import project_route_fare, projection_to_dict
+from app.analyzers.road_fare_projection import RoadSeriesCache, project_route_fare, projection_to_dict
 from app.models import ModalType
 
 # Classes de serviço da ANTT, na ordem em que aparecem na tela (do mais barato ao mais confortável).
@@ -35,8 +35,12 @@ def build_road_references(
     destination_city: str,
     destination_state: Optional[str],
     travel_date: Optional[str] = None,
+    series_cache: Optional[RoadSeriesCache] = None,
 ) -> List[Dict[str, Any]]:
-    """Faixa histórica por classe para a rota, com a média do mês da viagem quando existir."""
+    """Faixa histórica por classe para a rota, com a média do mês da viagem quando existir.
+
+    `series_cache` reaproveita a série que a busca já leu para montar o ônibus.
+    """
     from app.analyzers.price_thermometer import fetch_route_monthly_means
 
     travel_month = travel_date[:7] if travel_date else None
@@ -51,6 +55,7 @@ def build_road_references(
             destination_state=destination_state,
             service_class=service_class,
             modal=ModalType.ROAD,
+            series_cache=series_cache,
         )
         if len(series) < MIN_OFFICIAL_MONTHS:
             continue
@@ -64,7 +69,7 @@ def build_road_references(
         if travel_month:
             projection = projection_to_dict(project_route_fare(
                 db, origin_city, origin_state, destination_city, destination_state,
-                service_class, travel_month,
+                service_class, travel_month, cache=series_cache,
             ))
 
         references.append({
