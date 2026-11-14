@@ -147,7 +147,11 @@ class QuotePipeline:
 
         origin_transfer_time = origin_term.estimated_transfer_minutes if origin_term else 0
         dest_transfer_time = dest_term.estimated_transfer_minutes if dest_term else 0
-        checkin_buffer = 90 if quote.modal == "AIR" else 20
+        checkin_buffer = (
+            settings.AIRPORT_DOMESTIC_CHECKIN_BUFFER_MINUTES
+            if quote.modal == "AIR"
+            else settings.BUS_TERMINAL_CHECKIN_BUFFER_MINUTES
+        )
 
         quote.door_to_door_duration_minutes = (
             quote.duration_minutes + origin_transfer_time + dest_transfer_time + checkin_buffer

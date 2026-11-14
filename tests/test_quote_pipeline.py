@@ -289,3 +289,36 @@ def test_terminal_cache_queries_each_provider_id_once(db_session):
     assert missing == [None, None, None]
     # 1 consulta para o terminal achado + 2 (mapping e código oficial) para o que não existe
     assert len(statements) == 3
+
+
+@pytest.mark.parametrize("modal, setting", [
+    ("AIR", "AIRPORT_DOMESTIC_CHECKIN_BUFFER_MINUTES"),
+    ("ROAD", "BUS_TERMINAL_CHECKIN_BUFFER_MINUTES"),
+])
+def test_enrich_quote_reads_checkin_buffer_from_settings(db_session, monkeypatch, modal, setting):
+    """A antecedência de embarque vem do app/config.py, não de um número fixo no pipeline."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, setting, 33)
+    dep = datetime(2026, 11, 20, 8, 30)
+    ids = ("CGH", "SDU") if modal == "AIR" else ("sao-paulo-tiete-sp", "rio-de-janeiro-novo-rio-rj")
+    quote = StandardizedQuote(
+        origin_external_id=ids[0],
+        destination_external_id=ids[1],
+        modal=modal,
+        provider_source="ignav" if modal == "AIR" else "clickbus",
+        carrier_name="Teste",
+        service_class="ECONOMY" if modal == "AIR" else "SEMI_LEITO",
+        departure_time=dep,
+        arrival_time=dep.replace(hour=10),
+        duration_minutes=90,
+        base_price=150.0,
+    )
+
+    enriched, _, _ = QuotePipeline.enrich_quote(quote, db_session, evaluate=False)
+
+    meta = enriched.route_metadata
+    assert meta["checkin_buffer_minutes"] == 33
+    assert enriched.door_to_door_duration_minutes == (
+        90 + meta["origin_transfer_minutes"] + meta["destination_transfer_minutes"] + 33
+    )
