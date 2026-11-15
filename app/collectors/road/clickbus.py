@@ -45,12 +45,7 @@ from app.collectors.road.taxonomy import (
     SERVICE_CLASS_MAPPING as _SERVICE_CLASS_MAPPING,
     normalize_bus_service_class,
 )
-from app.collectors.compliance import (
-    CompliantHTTPClient,
-    NotAuthorizedError,
-    RobotsDisallowedError,
-    parse_retry_after,
-)
+from app.collectors.compliance import CompliantHTTPClient, parse_retry_after
 
 logger = logging.getLogger("trivio.collectors.clickbus")
 
