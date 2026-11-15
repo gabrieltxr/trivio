@@ -17,6 +17,12 @@ O que sai:
   não servem de cache e não entram mais na conta do saldo do Ignav (que só soma as cobradas
   desde a leitura). Opcional porque essas linhas também são o registro de auditoria do gasto.
 
+Com `--strip-payloads` (alternativa ao `--prune-queries`), as mesmas provider_queries ficam, mas
+sem a resposta guardada (`payload`): data, rota, status, cobrança e número de voos continuam
+registrados, e só sai o que ocupa espaço. Ninguém lê o payload de uma consulta vencida (o cache
+só usa as válidas). O arquivo do SQLite não encolhe sozinho: o espaço é reaproveitado pelas
+próximas gravações, ou devolvido ao disco com `VACUUM`.
+
 Faça backup do arquivo do banco antes de rodar com `--apply`.
 """
 
@@ -27,7 +33,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import or_  # noqa: E402
+from sqlalchemy import null, or_  # noqa: E402
 
 from app.analyzers.price_thermometer import HISTORY_LOOKBACK_DAYS  # noqa: E402
 from app.config import settings  # noqa: E402
@@ -46,6 +52,25 @@ def _now_naive_utc() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def stale_provider_queries(db, now: datetime):
+    """Consultas vencidas e anteriores à leitura do saldo: não são cache nem entram no saldo."""
+    as_of = _parse_as_of(settings.AIR_REQUESTS_REMAINING_AS_OF).replace(tzinfo=None)
+    return db.query(ProviderQuery).filter(
+        ProviderQuery.requested_at < as_of,
+        or_(ProviderQuery.expires_at.is_(None), ProviderQuery.expires_at < now),
+    )
+
+
+def build_payload_strip(db):
+    """As mesmas consultas de `stale_provider_queries` que ainda guardam a resposta."""
+    return stale_provider_queries(db, _now_naive_utc()).filter(ProviderQuery.payload.isnot(None))
+
+
+def strip_payloads(query) -> int:
+    # null() grava NULL de SQL; None numa coluna JSON viraria o texto 'null'.
+    return query.update({ProviderQuery.payload: null()}, synchronize_session=False)
+
+
 def build_queries(db, keep_history: bool, prune_queries: bool = True):
     now = _now_naive_utc()
     mappings = db.query(ProviderMapping).filter(ProviderMapping.provider_name.notin_(ACTIVE_MAPPING_PROVIDERS))
@@ -60,11 +85,7 @@ def build_queries(db, keep_history: bool, prune_queries: bool = True):
         FareQuote.provider_source.like("gtfs_%"),
     ))
 
-    as_of = _parse_as_of(settings.AIR_REQUESTS_REMAINING_AS_OF).replace(tzinfo=None)
-    queries = db.query(ProviderQuery).filter(
-        ProviderQuery.requested_at < as_of,
-        or_(ProviderQuery.expires_at.is_(None), ProviderQuery.expires_at < now),
-    )
+    queries = stale_provider_queries(db, now)
     selected = {"provider_mappings": mappings, "fare_quotes": quotes}
     if prune_queries:
         selected["provider_queries"] = queries
@@ -78,9 +99,14 @@ def main() -> None:
         "--keep-history", action="store_true",
         help=f"Mantém cotações vencidas dos últimos {HISTORY_LOOKBACK_DAYS} dias de provedor ativo.",
     )
-    parser.add_argument(
+    audit = parser.add_mutually_exclusive_group()
+    audit.add_argument(
         "--prune-queries", action="store_true",
         help="Também apaga provider_queries vencidas de antes da leitura do saldo (registro de auditoria).",
+    )
+    audit.add_argument(
+        "--strip-payloads", action="store_true",
+        help="Mantém essas provider_queries, mas apaga a resposta guardada (payload).",
     )
     args = parser.parse_args()
 
@@ -95,16 +121,21 @@ def main() -> None:
             for (name,) in mappings:
                 by_provider[name] = by_provider.get(name, 0) + 1
             print("  mapeamentos por provedor:", by_provider)
+        strip = build_payload_strip(db) if args.strip_payloads else None
+        if strip is not None:
+            print(f"provider_queries: {strip.count()} resposta(s) guardada(s) a esvaziar (as linhas ficam)")
 
         if not args.apply:
             print("Simulação: nada foi apagado. Rode com --apply para apagar.")
             return
         for query in queries.values():
             query.delete(synchronize_session=False)
+        if strip is not None:
+            strip_payloads(strip)
         db.commit()
 
     analyze_tables("route_monthly_fares", "fare_quotes", "provider_queries", "bus_schedules", "provider_mappings")
-    print("Apagado. Esquema e estatísticas do otimizador atualizados.")
+    print("Concluído. Esquema e estatísticas do otimizador atualizados.")
 
 
 if __name__ == "__main__":

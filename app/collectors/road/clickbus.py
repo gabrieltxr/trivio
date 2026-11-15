@@ -235,36 +235,24 @@ def parse_clickbus_trips(
 # 3. Coletor Principal ClickBus
 # ==============================================================================
 
+# Slug da ClickBus por official_code das rodoviárias (a busca só chama a ClickBus quando as
+# duas pontas têm rodoviária). É o fallback do ProviderMapping 'clickbus' gravado pela semente
+# (scripts/init_db.py e scripts/hub_candidates.py) e precisa concordar com ele: o mesmo slug
+# volta na cotação e é por ele que o pipeline acha a rodoviária. tests/test_clickbus_slugs.py confere.
+# Os slugs imitam os endereços do site; o formato da API B2B ainda não é conhecido.
 CLICKBUS_SLUG_MAP = {
-    "SAO": "sao-paulo-sp",
-    "CGH": "sao-paulo-sp",
-    "GRU": "sao-paulo-sp",
     "TIETE": "sao-paulo-tiete-sp",
     "BARRA_FUNDA": "sao-paulo-barra-funda-sp",
-    "RIO": "rio-de-janeiro-rj",
-    "SDU": "rio-de-janeiro-rj",
-    "GIG": "rio-de-janeiro-rj",
     "NOVO_RIO": "rio-de-janeiro-novo-rio-rj",
-    "CWB": "curitiba-pr",
-    "RODO_CWB": "curitiba-pr",
-    "POA": "porto-alegre-rs",
-    "ROD_POA": "porto-alegre-rs",
-    "VCP": "campinas-sp",
     "ROD_CAMPINAS": "campinas-sp",
-    "PET": "pelotas-rs",
+    "RODO_CWB": "curitiba-pr",
+    "ROD_POA": "porto-alegre-rs",
     "ROD_PELOTAS": "pelotas-rs",
-    "RIG": "rio-grande-rs",
     "ROD_RIO_GRANDE": "rio-grande-rs",
-    "BHZ": "belo-horizonte-mg",
-    "CNF": "belo-horizonte-mg",
-    "ROD_BH": "belo-horizonte-mg",
-    "BSB": "brasilia-df",
-    "ROD_BSB": "brasilia-df",
-    "FLN": "florianopolis-sc",
-    "ROD_FLN": "florianopolis-sc",
-    "SSA": "salvador-ba",
-    "FOR": "fortaleza-ce",
-    "REC": "recife-pe",
+    # Hubs de scripts/hub_candidates.py
+    "ROD_BELO_HORIZONTE": "belo-horizonte-mg",
+    "ROD_BRASILIA": "brasilia-df",
+    "ROD_FLORIANOPOLIS": "florianopolis-sc",
 }
 
 

@@ -32,6 +32,7 @@ CANDIDATE_HUBS: List[Dict] = [
             {   # CONFERIR: nome e coordenadas da rodoviária
                 "name": "Rodoviária de Florianópolis", "modal": "ROAD", "official_code": "ROD_FLORIANOPOLIS",
                 "latitude": -27.5954, "longitude": -48.5480,
+                "mappings": [{"provider_name": "clickbus", "external_id": "florianopolis-sc"}],  # ver CLICKBUS_SLUG_MAP
             },
             {
                 "name": "Aeroporto Internacional Hercílio Luz", "modal": "AIR", "official_code": "FLN",
@@ -52,6 +53,7 @@ CANDIDATE_HUBS: List[Dict] = [
             {   # CONFERIR: nome e coordenadas da rodoviária
                 "name": "Rodoviária de Belo Horizonte", "modal": "ROAD", "official_code": "ROD_BELO_HORIZONTE",
                 "latitude": -19.9167, "longitude": -43.9345,
+                "mappings": [{"provider_name": "clickbus", "external_id": "belo-horizonte-mg"}],  # ver CLICKBUS_SLUG_MAP
             },
             {   # Confins: principal aeroporto comercial da região. Pampulha (PLU) fica de fora deste lote.
                 "name": "Aeroporto Internacional Tancredo Neves (Confins)", "modal": "AIR", "official_code": "CNF",
@@ -72,6 +74,7 @@ CANDIDATE_HUBS: List[Dict] = [
             {   # CONFERIR: nome e coordenadas da rodoviária
                 "name": "Rodoviária do Plano Piloto", "modal": "ROAD", "official_code": "ROD_BRASILIA",
                 "latitude": -15.7939, "longitude": -47.8828,
+                "mappings": [{"provider_name": "clickbus", "external_id": "brasilia-df"}],  # ver CLICKBUS_SLUG_MAP
             },
             {
                 "name": "Aeroporto Internacional de Brasília", "modal": "AIR", "official_code": "BSB",
