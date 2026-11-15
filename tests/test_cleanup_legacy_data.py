@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 from app.database import SessionLocal
 from app.models import FareQuote, ModalType, ProviderMapping, ProviderQuery, Terminal
@@ -43,10 +44,11 @@ def db():
         _quote(session, "trivio_interliner", NOW + timedelta(days=1), signature="interline"),
         _quote(session, "ignav", NOW + timedelta(hours=1), signature="valid"),
         _quote(session, "ignav", NOW - timedelta(hours=1), signature="recent-expired"),
-        ProviderQuery(provider="ignav", query_key="q-old", status="ok", billed=1,
-                      requested_at=datetime(2020, 1, 1), expires_at=datetime(2020, 1, 1, 2)),
+        ProviderQuery(provider="ignav", query_key="q-old", status="ok", billed=1, quotes_count=2,
+                      requested_at=datetime(2020, 1, 1), expires_at=datetime(2020, 1, 1, 2),
+                      payload=[{"base_price": 300.0}, {"base_price": 310.0}]),
         ProviderQuery(provider="ignav", query_key="q-new", status="ok", billed=1,
-                      requested_at=NOW, expires_at=NOW + timedelta(hours=2)),
+                      requested_at=NOW, expires_at=NOW + timedelta(hours=2), payload=[{"base_price": 320.0}]),
     ]
     session.add_all(created)
     session.commit()
@@ -83,3 +85,29 @@ def test_keep_history_preserves_recent_quotes_of_active_providers(db):
 
 def test_provider_queries_are_kept_unless_asked(db):
     assert "provider_queries" not in cleanup.build_queries(db, keep_history=False, prune_queries=False)
+
+
+def test_strip_payloads_keeps_the_audit_row_and_drops_only_the_response(db):
+    """--strip-payloads: a consulta antiga continua registrada, sem a resposta; a recente fica intacta."""
+    stripped = cleanup.strip_payloads(cleanup.build_payload_strip(db))
+    db.commit()
+    db.expire_all()
+
+    assert stripped == 1
+    old = db.query(ProviderQuery).filter(ProviderQuery.query_key == "q-old").one()
+    assert old.payload is None
+    assert (old.status, old.billed, old.quotes_count, old.requested_at) == ("ok", 1, 2, datetime(2020, 1, 1))
+    raw = db.execute(text("SELECT payload IS NULL FROM provider_queries WHERE query_key = 'q-old'")).scalar()
+    assert raw == 1   # NULL de SQL, não o texto 'null'
+
+    new = db.query(ProviderQuery).filter(ProviderQuery.query_key == "q-new").one()
+    assert new.payload == [{"base_price": 320.0}]
+
+    # Rodar de novo não encontra mais nada a esvaziar.
+    assert cleanup.build_payload_strip(db).count() == 0
+
+
+def test_strip_payloads_and_prune_queries_are_exclusive(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["cleanup_legacy_data.py", "--prune-queries", "--strip-payloads"])
+    with pytest.raises(SystemExit):
+        cleanup.main()
