@@ -4,12 +4,13 @@ Uses RapidFuzz for fuzzy matching and normalization of user search inputs
 and third-party provider terminal/city names to Trivio Hubs and Terminals.
 """
 
-import unicodedata
 import re
 from dataclasses import dataclass
 from typing import Optional, Dict
 from rapidfuzz import fuzz, process
 from sqlalchemy.orm import Session
+
+from app.text import strip_accents
 from app.models import Hub, Terminal, ModalType
 
 
@@ -54,9 +55,7 @@ def normalize_text(text: str) -> str:
     """Normalize string by lowercasing, stripping accents, and removing excess whitespace."""
     if not text:
         return ""
-    # Strip accents
-    normalized = unicodedata.normalize("NFKD", text)
-    stripped = "".join(c for c in normalized if not unicodedata.combining(c))
+    stripped = strip_accents(text)
     # Remove special punctuation and lowercase
     cleaned = re.sub(r"[^\w\s]", " ", stripped).lower()
     return re.sub(r"\s+", " ", cleaned).strip()

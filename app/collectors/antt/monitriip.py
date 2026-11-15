@@ -17,10 +17,11 @@ contra uma lista de apelidos conhecidos e informa o que não encontrou. Use
 from dataclasses import dataclass, field
 import csv
 import logging
-import unicodedata
 from typing import Dict, List, Optional, Tuple
 
 import polars as pl
+
+from app.text import strip_accents
 
 
 logger = logging.getLogger("trivio.collectors.antt.monitriip")
@@ -73,8 +74,7 @@ CANDIDATE_ENCODINGS = ("utf-8-sig", "latin-1")
 
 def normalize_column_name(name: str) -> str:
     """Normaliza um nome de coluna: sem acento, minúsculo, com underscores."""
-    stripped = unicodedata.normalize("NFKD", str(name))
-    stripped = "".join(c for c in stripped if not unicodedata.combining(c))
+    stripped = strip_accents(str(name))
     cleaned = stripped.strip().lower()
     for ch in (" ", "-", ".", "/"):
         cleaned = cleaned.replace(ch, "_")
@@ -85,8 +85,7 @@ def normalize_column_name(name: str) -> str:
 
 def normalize_place(name: str) -> str:
     """Normaliza o nome de um município para compor a chave de rota."""
-    stripped = unicodedata.normalize("NFKD", str(name))
-    stripped = "".join(c for c in stripped if not unicodedata.combining(c))
+    stripped = strip_accents(str(name))
     return " ".join(stripped.upper().split())
 
 

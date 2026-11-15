@@ -9,8 +9,9 @@ Compartilhado entre os coletores rodoviários (ClickBus, ANTT) para que o
 Termômetro de Preço compare tarifas da mesma categoria de conforto.
 """
 
-import unicodedata
 from typing import Dict
+
+from app.text import strip_accents
 
 # Quanto mais específico o termo, maior a prioridade (ver ordenação em normalize_bus_service_class)
 SERVICE_CLASS_MAPPING: Dict[str, str] = {
@@ -35,11 +36,6 @@ SERVICE_CLASS_MAPPING: Dict[str, str] = {
 }
 
 
-def _strip_accents(text: str) -> str:
-    normalized = unicodedata.normalize("NFKD", text)
-    return "".join(c for c in normalized if not unicodedata.combining(c))
-
-
 def normalize_bus_service_class(raw_service: str) -> str:
     """Normaliza nomes comerciais de classes de ônibus para a taxonomia Trivio.
 
@@ -49,7 +45,7 @@ def normalize_bus_service_class(raw_service: str) -> str:
     if not raw_service:
         return "CONVENCIONAL"
 
-    cleaned = _strip_accents(str(raw_service).strip().lower())
+    cleaned = strip_accents(str(raw_service).strip().lower())
 
     # Termos mais longos primeiro: 'leito cama' deve vencer 'leito'
     for key in sorted(SERVICE_CLASS_MAPPING.keys(), key=len, reverse=True):
