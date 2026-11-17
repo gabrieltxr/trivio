@@ -27,7 +27,7 @@ function measure(container: HTMLElement | null): Map<string, number> | null {
  * O contêiner precisa ser `position: relative` (offsetTop é medido em relação a ele) e cada
  * item precisa de `data-flip-key`. Só `transform` é animado, então roda no compositor.
  */
-export function useFlipList(containerRef: RefObject<HTMLElement>, trigger: unknown) {
+export function useFlipList(containerRef: RefObject<HTMLElement | null>, trigger: unknown) {
   const committedTrigger = useRef(trigger);
   const before = useRef<Map<string, number> | null>(null);
 
